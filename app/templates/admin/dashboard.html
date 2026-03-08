@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}⚙️ Admin Panel{% endblock %}
+{% block nav_admin %}active{% endblock %}
+{% block content %}
+<div class="admin-dashboard">
+    <h1 class="page-title">⚙️ Панель управления</h1>
+    <div class="admin-grid">
+        <a href="/admin/musicbot" class="admin-card glass">
+            <div class="admin-card-icon">🎵</div>
+            <h3>MusicBot</h3>
+            <p>Настройки Telegram-бота для музыки</p>
+            <span class="status-badge status-active">Настроен</span>
+        </a>
+        <a href="/admin/weatherbot" class="admin-card glass">
+            <div class="admin-card-icon">🌦</div>
+            <h3>WeatherBot</h3>
+            <p>Прогноз погоды в Telegram</p>
+            <span class="status-badge status-pending">Coming Soon</span>
+        </a>
+    </div>
+</div>
+{% endblock %}

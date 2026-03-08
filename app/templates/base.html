@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Platform{% endblock %}</title>
+    <meta name="description" content="Weather Dashboard & Bot Management Platform">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <span class="nav-logo">⚡</span>
+            <span class="nav-title">Platform</span>
+        </div>
+        <div class="nav-links">
+            <a href="/" class="nav-link {% block nav_home %}{% endblock %}">🌤 Погода</a>
+            <a href="/admin/" class="nav-link {% block nav_admin %}{% endblock %}">⚙️ Админ</a>
+        </div>
+    </nav>
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

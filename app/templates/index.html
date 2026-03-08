@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}🌤 Weather Dashboard{% endblock %}
+{% block nav_home %}active{% endblock %}
+{% block content %}
+<div class="dashboard">
+    <h1 class="page-title">🌤 Weather Dashboard</h1>
+
+    <div class="location-panels">
+        <!-- Panel 1: Auto-geolocation -->
+        <section class="location-panel glass" id="panel-auto">
+            <div class="panel-header">
+                <h2>📍 Моё местоположение</h2>
+                <span class="location-name" id="auto-location-name">Определяю...</span>
+            </div>
+            <div class="weather-grid" id="auto-weather">
+                <div class="card glass card-current" id="auto-current">
+                    <div class="card-icon">🌡</div>
+                    <h3>Текущая погода</h3>
+                    <div class="card-body" id="auto-current-body"><div class="loader"></div></div>
+                </div>
+                <div class="card glass card-aqi" id="auto-aqi">
+                    <div class="card-icon">🫁</div>
+                    <h3>Качество воздуха</h3>
+                    <div class="card-body" id="auto-aqi-body"><div class="loader"></div></div>
+                </div>
+                <div class="card glass card-rain" id="auto-rain">
+                    <div class="card-icon">🌧</div>
+                    <h3>Шанс дождя</h3>
+                    <div class="card-body" id="auto-rain-body"><div class="loader"></div></div>
+                </div>
+            </div>
+            <div class="forecast-section">
+                <div class="forecast-header">
+                    <h3>📅 Прогноз</h3>
+                    <div class="forecast-tabs">
+                        <button class="tab active" data-days="7" data-panel="auto">7 дней</button>
+                        <button class="tab" data-days="14" data-panel="auto">14 дней</button>
+                        <button class="tab" data-days="30" data-panel="auto">Месяц</button>
+                    </div>
+                </div>
+                <div class="forecast-grid" id="auto-forecast"><div class="loader"></div></div>
+            </div>
+            <div class="history-section">
+                <h3>📜 Архив погоды</h3>
+                <div class="history-controls">
+                    <input type="date" class="input-date" id="auto-history-date">
+                    <button class="btn btn-secondary" onclick="loadHistory('auto')">Показать</button>
+                </div>
+                <div class="history-body" id="auto-history-body"></div>
+            </div>
+        </section>
+
+        <!-- Panel 2: Selected location -->
+        <section class="location-panel glass" id="panel-search">
+            <div class="panel-header">
+                <h2>🔎 Выбранная локация</h2>
+                <div class="search-box">
+                    <input type="text" id="city-input" placeholder="Введите город..." autocomplete="off">
+                    <button class="btn btn-primary" id="city-search-btn">Найти</button>
+                </div>
+            </div>
+            <div class="weather-grid" id="search-weather">
+                <div class="card glass card-current">
+                    <div class="card-icon">🌡</div>
+                    <h3>Текущая погода</h3>
+                    <div class="card-body" id="search-current-body"><span class="hint">Введите город</span></div>
+                </div>
+                <div class="card glass card-aqi">
+                    <div class="card-icon">🫁</div>
+                    <h3>Качество воздуха</h3>
+                    <div class="card-body" id="search-aqi-body"><span class="hint">Введите город</span></div>
+                </div>
+                <div class="card glass card-rain">
+                    <div class="card-icon">🌧</div>
+                    <h3>Шанс дождя</h3>
+                    <div class="card-body" id="search-rain-body"><span class="hint">Введите город</span></div>
+                </div>
+            </div>
+            <div class="forecast-section">
+                <div class="forecast-header">
+                    <h3>📅 Прогноз</h3>
+                    <div class="forecast-tabs">
+                        <button class="tab active" data-days="7" data-panel="search">7 дней</button>
+                        <button class="tab" data-days="14" data-panel="search">14 дней</button>
+                        <button class="tab" data-days="30" data-panel="search">Месяц</button>
+                    </div>
+                </div>
+                <div class="forecast-grid" id="search-forecast"><span class="hint">Введите город</span></div>
+            </div>
+            <div class="history-section">
+                <h3>📜 Архив погоды</h3>
+                <div class="history-controls">
+                    <input type="date" class="input-date" id="search-history-date">
+                    <button class="btn btn-secondary" onclick="loadHistory('search')">Показать</button>
+                </div>
+                <div class="history-body" id="search-history-body"></div>
+            </div>
+        </section>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/weather.js"></script>
+{% endblock %}

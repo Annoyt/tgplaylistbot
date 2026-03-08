@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}🎵 MusicBot Settings{% endblock %}
+{% block nav_admin %}active{% endblock %}
+{% block content %}
+<div class="settings-page">
+    <div class="settings-header">
+        <a href="/admin/" class="btn btn-ghost">← Назад</a>
+        <h1 class="page-title">🎵 MusicBot Configuration</h1>
+    </div>
+
+    {% if request.query_params.get('saved') %}
+    <div class="alert alert-success">✅ Настройки сохранены</div>
+    {% endif %}
+
+    <form method="post" action="/admin/musicbot" class="settings-form">
+        <section class="settings-section glass">
+            <h2>🔑 API Ключи</h2>
+            <div class="form-group">
+                <label for="telegram_bot_token">Telegram Bot Token</label>
+                <div class="input-secret">
+                    <input type="password" id="telegram_bot_token" name="telegram_bot_token"
+                        value="{{ bot_settings.get('telegram_bot_token', '') }}" placeholder="123456:ABC-DEF...">
+                    <button type="button" class="btn-eye" onclick="toggleSecret(this)">👁</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="vk_token">VK User Token</label>
+                <div class="input-secret">
+                    <input type="password" id="vk_token" name="vk_token"
+                        value="{{ bot_settings.get('vk_token', '') }}" placeholder="vk1.a.xxx...">
+                    <button type="button" class="btn-eye" onclick="toggleSecret(this)">👁</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="spotify_client_id">Spotify Client ID</label>
+                <input type="text" id="spotify_client_id" name="spotify_client_id"
+                    value="{{ bot_settings.get('spotify_client_id', '') }}" placeholder="xxxxxxxxxxxxxxxx">
+            </div>
+            <div class="form-group">
+                <label for="spotify_client_secret">Spotify Client Secret</label>
+                <div class="input-secret">
+                    <input type="password" id="spotify_client_secret" name="spotify_client_secret"
+                        value="{{ bot_settings.get('spotify_client_secret', '') }}" placeholder="xxxxxxxxxxxxxxxx">
+                    <button type="button" class="btn-eye" onclick="toggleSecret(this)">👁</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="acoustid_api_key">AcoustID API Key</label>
+                <input type="text" id="acoustid_api_key" name="acoustid_api_key"
+                    value="{{ bot_settings.get('acoustid_api_key', '') }}" placeholder="xxxxxxxx">
+            </div>
+        </section>
+
+        <section class="settings-section glass">
+            <h2>⚙️ Настройки по умолчанию</h2>
+            <div class="form-group">
+                <label>Качество</label>
+                <div class="radio-group">
+                    <label class="radio-label">
+                        <input type="radio" name="default_quality" value="mp3_320"
+                            {{ 'checked' if bot_settings.get('default_quality', 'mp3_320') == 'mp3_320' else '' }}>
+                        MP3 320kbps
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="default_quality" value="flac"
+                            {{ 'checked' if bot_settings.get('default_quality') == 'flac' else '' }}>
+                        FLAC
+                    </label>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="results_per_page">Результатов на странице</label>
+                <input type="number" id="results_per_page" name="results_per_page"
+                    value="{{ bot_settings.get('results_per_page', '10') }}" min="3" max="20">
+            </div>
+            <div class="form-group">
+                <label for="platform_priority">Приоритет платформ (через запятую)</label>
+                <input type="text" id="platform_priority" name="platform_priority"
+                    value="{{ bot_settings.get('platform_priority', 'youtube,vk,spotify') }}"
+                    placeholder="youtube,vk,spotify">
+            </div>
+        </section>
+
+        <div class="settings-actions">
+            <button type="submit" class="btn btn-primary">💾 Сохранить</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function toggleSecret(btn) {
+    const input = btn.previousElementSibling;
+    input.type = input.type === 'password' ? 'text' : 'password';
+    btn.textContent = input.type === 'password' ? '👁' : '🙈';
+}
+</script>
+{% endblock %}

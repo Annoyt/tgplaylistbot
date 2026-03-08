@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}🌦 WeatherBot{% endblock %}
+{% block nav_admin %}active{% endblock %}
+{% block content %}
+<div class="settings-page">
+    <div class="settings-header">
+        <a href="/admin/" class="btn btn-ghost">← Назад</a>
+        <h1 class="page-title">🌦 WeatherBot</h1>
+    </div>
+    <section class="settings-section glass coming-soon">
+        <div class="coming-soon-icon">🌦</div>
+        <h2>Coming Soon</h2>
+        <p>Telegram-бот для прогноза погоды. Будет присылать прогнозы по запросу с разными характеристиками.</p>
+        <div class="coming-soon-features">
+            <span class="feature-tag">Прогноз по локации</span>
+            <span class="feature-tag">Качество воздуха</span>
+            <span class="feature-tag">Оповещения об осадках</span>
+            <span class="feature-tag">Утренние дайджесты</span>
+        </div>
+    </section>
+</div>
+{% endblock %}
