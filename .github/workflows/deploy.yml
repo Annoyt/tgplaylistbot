@@ -41,20 +41,20 @@ jobs:
             git pull origin ${{ github.ref_name }}
             
             # Создать venv
-            if [ ! -d ".venv/bin" ]; then
+            if [ ! -f ".venv/bin/python" ]; then
               echo "Creating virtual environment..."
               rm -rf .venv
               python3 -m venv .venv
             fi
             
-            # Установить зависимости
-            ./.venv/bin/pip install -r requirements.txt --quiet
+            # Установить зависимости через python -m pip
+            .venv/bin/python -m pip install -r requirements.txt --quiet
             
             # Остановить старый процесс бота если есть
             pkill -f "python.*bot" || true
             
             # Запустить бота в фоне
-            nohup ./.venv/bin/python -m bot > bot.log 2>&1 &
+            nohup .venv/bin/python -m bot > bot.log 2>&1 &
             
             echo "✅ Деплой завершён! Бот запущен."
             echo "Логи: tail -f /root/tgplaylistbot/bot.log"
