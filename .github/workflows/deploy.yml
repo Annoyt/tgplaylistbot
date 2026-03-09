@@ -29,7 +29,7 @@ jobs:
               apt-get update -qq && apt-get install -y -qq git
             fi
             
-            # Создать папку проекта (используем HTTPS)
+            # Создать папку проекта
             PROJECT_DIR="/root/tgplaylistbot"
             if [ ! -d "$PROJECT_DIR" ]; then
               echo "Cloning repository..."
@@ -41,5 +41,24 @@ jobs:
             git checkout ${{ github.ref_name }}
             git pull origin ${{ github.ref_name }}
             
-            echo "✅ Деплой завершён!"
+            # Создать venv если нет
+            if [ ! -d ".venv" ]; then
+              python3 -m venv .venv
+            fi
+            source .venv/bin/activate
+            
+            # Установить зависимости
+            pip install -r requirements.txt --quiet
+            
+            # Остановить старый процесс бота если есть
+            pkill -f "python -m bot" || true
+            pkill -f "uvicorn" || true
+            
+            # Запустить бота в фоне
+            nohup python -m bot > bot.log 2>&1 &
+            
+            # Или если есть веб-часть на FastAPI:
+            # nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+            
+            echo "✅ Деплой завершён! Бот запущен."
           ENDSCRIPT
