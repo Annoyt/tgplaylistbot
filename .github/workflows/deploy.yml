@@ -24,6 +24,7 @@ jobs:
             set -e
             
             # Установить зависимости системы
+            export DEBIAN_FRONTEND=noninteractive
             apt-get update -qq
             apt-get install -y -qq git python3 python3-pip python3-venv
             
@@ -40,20 +41,20 @@ jobs:
             git pull origin ${{ github.ref_name }}
             
             # Создать venv
-            if [ ! -d ".venv" ]; then
+            if [ ! -d ".venv/bin" ]; then
+              echo "Creating virtual environment..."
+              rm -rf .venv
               python3 -m venv .venv
             fi
-            source .venv/bin/activate
             
             # Установить зависимости
-            pip install -r requirements.txt --quiet
+            ./.venv/bin/pip install -r requirements.txt --quiet
             
             # Остановить старый процесс бота если есть
-            pkill -f "python -m bot" || true
-            pkill -f "uvicorn" || true
+            pkill -f "python.*bot" || true
             
             # Запустить бота в фоне
-            nohup python -m bot > bot.log 2>&1 &
+            nohup ./.venv/bin/python -m bot > bot.log 2>&1 &
             
             echo "✅ Деплой завершён! Бот запущен."
             echo "Логи: tail -f /root/tgplaylistbot/bot.log"
