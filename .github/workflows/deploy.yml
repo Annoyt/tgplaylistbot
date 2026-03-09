@@ -23,11 +23,9 @@ jobs:
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} 'bash -s' << 'ENDSCRIPT'
             set -e
             
-            # Проверить git
-            if ! command -v git &> /dev/null; then
-              echo "Installing git..."
-              apt-get update -qq && apt-get install -y -qq git
-            fi
+            # Установить зависимости системы
+            apt-get update -qq
+            apt-get install -y -qq git python3 python3-pip python3-venv
             
             # Создать папку проекта
             PROJECT_DIR="/root/tgplaylistbot"
@@ -41,7 +39,7 @@ jobs:
             git checkout ${{ github.ref_name }}
             git pull origin ${{ github.ref_name }}
             
-            # Создать venv если нет
+            # Создать venv
             if [ ! -d ".venv" ]; then
               python3 -m venv .venv
             fi
@@ -57,8 +55,6 @@ jobs:
             # Запустить бота в фоне
             nohup python -m bot > bot.log 2>&1 &
             
-            # Или если есть веб-часть на FastAPI:
-            # nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
-            
             echo "✅ Деплой завершён! Бот запущен."
+            echo "Логи: tail -f /root/tgplaylistbot/bot.log"
           ENDSCRIPT
