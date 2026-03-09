@@ -1,0 +1,52 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: [feature/platform-musicbot, main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      
+      - name: Add host to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+      
+      - name: Deploy to server
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+            set -e
+            cd ~/tgplaylistbot || git clone git@github.com:Annoyt/tgplaylistbot.git ~/tgplaylistbot
+            cd ~/tgplaylistbot
+            git fetch origin
+            git checkout ${{ github.ref_name }}
+            git pull origin ${{ github.ref_name }}
+            
+            # Создать venv если нет
+            if [ ! -d ".venv" ]; then
+              python3 -m venv .venv
+            fi
+            source .venv/bin/activate
+            
+            # Установить зависимости
+            pip install -r requirements.txt --quiet
+            
+            # Перезапустить бота (пример для systemd)
+            # sudo systemctl restart tgplaylistbot || true
+            
+            # Или через Docker Compose
+            # docker-compose down && docker-compose up -d
+            
+            echo "✅ Деплой завершён!"
+          EOF
