@@ -1,0 +1,276 @@
+/* ═══════════════════════════════════════════════════════ 
+   DESIGN SYSTEM — Dark theme / Glassmorphism / Inter
+   ═══════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+    --bg: #0b0e14;
+    --bg-card: rgba(255,255,255,0.04);
+    --bg-glass: rgba(255,255,255,0.06);
+    --border-glass: rgba(255,255,255,0.08);
+    --text: #e1e4ea;
+    --text-muted: #7a8194;
+    --accent: #6c5ce7;
+    --accent-glow: rgba(108,92,231,0.35);
+    --success: #00cec9;
+    --danger: #ff6b6b;
+    --warning: #fdcb6e;
+    --gradient-warm: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    --gradient-cold: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+    --gradient-accent: linear-gradient(135deg, #6c5ce7 0%, #a29bfe 100%);
+    --radius: 16px;
+    --radius-sm: 10px;
+    --shadow: 0 8px 32px rgba(0,0,0,0.4);
+    --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+html { font-size: 15px; scroll-behavior: smooth; }
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.6;
+}
+
+/* ── Navbar ─────────────────────────────────────── */
+.navbar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 1rem 2rem;
+    background: rgba(11,14,20,0.85);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border-glass);
+    position: sticky; top: 0; z-index: 100;
+}
+.nav-brand { display: flex; align-items: center; gap: 0.6rem; }
+.nav-logo { font-size: 1.5rem; }
+.nav-title { font-weight: 700; font-size: 1.1rem; letter-spacing: -0.02em; }
+.nav-links { display: flex; gap: 0.5rem; }
+.nav-link {
+    padding: 0.5rem 1rem; border-radius: var(--radius-sm);
+    text-decoration: none; color: var(--text-muted);
+    transition: var(--transition); font-weight: 500; font-size: 0.9rem;
+}
+.nav-link:hover { color: var(--text); background: var(--bg-glass); }
+.nav-link.active { color: var(--accent); background: var(--accent-glow); }
+
+/* ── Container ──────────────────────────────────── */
+.container { max-width: 1440px; margin: 0 auto; padding: 2rem; }
+
+/* ── Glass Cards ────────────────────────────────── */
+.glass {
+    background: var(--bg-glass);
+    backdrop-filter: blur(20px);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    transition: var(--transition);
+}
+.glass:hover { border-color: rgba(255,255,255,0.12); }
+
+/* ── Page Titles ────────────────────────────────── */
+.page-title {
+    font-size: 2rem; font-weight: 700; letter-spacing: -0.03em;
+    margin-bottom: 2rem;
+    background: var(--gradient-accent); -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent; background-clip: text;
+}
+
+/* ── Cards ──────────────────────────────────────── */
+.card { padding: 1.5rem; }
+.card-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+.card h3 { font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 1rem; }
+.card-body { min-height: 80px; }
+
+/* ── Weather Dashboard ──────────────────────────── */
+.dashboard { }
+.location-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
+@media(max-width:1024px) { .location-panels { grid-template-columns: 1fr; } }
+
+.location-panel { padding: 2rem; }
+.panel-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; }
+.panel-header h2 { font-size: 1.2rem; font-weight: 600; }
+.location-name { color: var(--accent); font-weight: 500; font-size: 0.9rem; }
+
+.weather-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+@media(max-width:768px) { .weather-grid { grid-template-columns: 1fr; } }
+
+.temp-value { font-size: 3rem; font-weight: 700; letter-spacing: -0.04em; }
+.temp-desc { color: var(--text-muted); text-transform: capitalize; margin-top: 0.3rem; }
+.temp-detail { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem; }
+
+.aqi-badge {
+    display: inline-block; padding: 0.3rem 0.8rem; border-radius: 20px;
+    font-weight: 600; font-size: 0.9rem; margin-bottom: 0.5rem;
+}
+.aqi-1 { background: #2ecc71; color: #000; }
+.aqi-2 { background: #f1c40f; color: #000; }
+.aqi-3 { background: #e67e22; color: #fff; }
+.aqi-4 { background: #e74c3c; color: #fff; }
+.aqi-5 { background: #8e44ad; color: #fff; }
+
+.rain-chance { font-size: 2rem; font-weight: 700; color: var(--success); }
+.rain-label { font-size: 0.85rem; color: var(--text-muted); }
+
+/* ── Forecast Section ───────────────────────────── */
+.forecast-section { margin-bottom: 1.5rem; }
+.forecast-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.forecast-header h3 { font-size: 1rem; font-weight: 600; }
+.forecast-tabs { display: flex; gap: 0.3rem; }
+.tab {
+    padding: 0.4rem 0.9rem; border: 1px solid var(--border-glass); border-radius: 8px;
+    background: transparent; color: var(--text-muted); cursor: pointer; font-size: 0.8rem;
+    font-family: inherit; transition: var(--transition);
+}
+.tab:hover { color: var(--text); border-color: rgba(255,255,255,0.15); }
+.tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.forecast-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 0.8rem; }
+.forecast-day {
+    text-align: center; padding: 1rem 0.5rem; border-radius: var(--radius-sm);
+    background: var(--bg-card); border: 1px solid var(--border-glass);
+    transition: var(--transition);
+}
+.forecast-day:hover { transform: translateY(-2px); border-color: var(--accent); }
+.forecast-day .day-name { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+.forecast-day .day-icon { font-size: 1.5rem; margin: 0.3rem 0; }
+.forecast-day .day-temp { font-weight: 600; }
+.forecast-day .day-temp-min { color: var(--text-muted); font-size: 0.85rem; }
+
+/* ── History Section ────────────────────────────── */
+.history-section h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0.8rem; }
+.history-controls { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.8rem; }
+.input-date {
+    padding: 0.5rem 0.8rem; border: 1px solid var(--border-glass); border-radius: 8px;
+    background: var(--bg-card); color: var(--text); font-family: inherit; font-size: 0.9rem;
+}
+
+/* ── Search Box ─────────────────────────────────── */
+.search-box { display: flex; gap: 0.5rem; }
+.search-box input {
+    padding: 0.5rem 1rem; border: 1px solid var(--border-glass); border-radius: 8px;
+    background: var(--bg-card); color: var(--text); font-family: inherit; font-size: 0.9rem;
+    width: 200px; transition: var(--transition);
+}
+.search-box input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+/* ── Buttons ────────────────────────────────────── */
+.btn {
+    padding: 0.5rem 1.2rem; border-radius: 8px; border: none;
+    font-family: inherit; font-weight: 600; font-size: 0.85rem;
+    cursor: pointer; transition: var(--transition); text-decoration: none;
+}
+.btn-primary {
+    background: var(--gradient-accent); color: #fff;
+    box-shadow: 0 4px 15px var(--accent-glow);
+}
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 20px var(--accent-glow); }
+.btn-secondary { background: var(--bg-glass); color: var(--text); border: 1px solid var(--border-glass); }
+.btn-secondary:hover { border-color: var(--accent); }
+.btn-ghost { background: transparent; color: var(--text-muted); }
+.btn-ghost:hover { color: var(--text); }
+.btn-full { width: 100%; }
+
+/* ── Forms ──────────────────────────────────────── */
+.form-group { margin-bottom: 1.2rem; }
+.form-group label {
+    display: block; font-size: 0.85rem; font-weight: 500;
+    color: var(--text-muted); margin-bottom: 0.4rem;
+}
+.form-group input[type="text"],
+.form-group input[type="password"],
+.form-group input[type="number"],
+.form-group input[type="email"] {
+    width: 100%; padding: 0.7rem 1rem; border: 1px solid var(--border-glass);
+    border-radius: 8px; background: var(--bg-card); color: var(--text);
+    font-family: inherit; font-size: 0.95rem; transition: var(--transition);
+}
+.form-group input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+.input-secret { display: flex; gap: 0; position: relative; }
+.input-secret input { border-radius: 8px 0 0 8px; flex: 1; }
+.btn-eye {
+    padding: 0.7rem 0.8rem; border: 1px solid var(--border-glass); border-left: none;
+    border-radius: 0 8px 8px 0; background: var(--bg-card); color: var(--text);
+    cursor: pointer; font-size: 1rem; transition: var(--transition);
+}
+.btn-eye:hover { background: rgba(255,255,255,0.08); }
+
+.radio-group { display: flex; gap: 1rem; }
+.radio-label { display: flex; align-items: center; gap: 0.4rem; cursor: pointer; font-size: 0.9rem; }
+.radio-label input[type="radio"] { accent-color: var(--accent); }
+
+/* ── Login ──────────────────────────────────────── */
+.login-container {
+    display: flex; justify-content: center; align-items: center;
+    min-height: 70vh;
+}
+.login-card { padding: 2.5rem; width: 100%; max-width: 400px; }
+.login-title { text-align: center; font-size: 1.5rem; margin-bottom: 1.5rem; }
+
+/* ── Admin ──────────────────────────────────────── */
+.admin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1.5rem; }
+.admin-card {
+    padding: 2rem; text-decoration: none; color: var(--text);
+    display: flex; flex-direction: column; gap: 0.5rem;
+    transition: var(--transition);
+}
+.admin-card:hover { transform: translateY(-4px); border-color: var(--accent); }
+.admin-card-icon { font-size: 2.5rem; }
+.admin-card h3 { font-size: 1.2rem; font-weight: 600; }
+.admin-card p { color: var(--text-muted); font-size: 0.9rem; }
+
+.status-badge {
+    display: inline-block; padding: 0.2rem 0.6rem; border-radius: 12px;
+    font-size: 0.75rem; font-weight: 600; width: fit-content;
+}
+.status-active { background: rgba(0,206,201,0.15); color: var(--success); }
+.status-pending { background: rgba(253,203,110,0.15); color: var(--warning); }
+
+/* ── Settings ───────────────────────────────────── */
+.settings-page { max-width: 700px; }
+.settings-header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; }
+.settings-section { padding: 1.5rem; margin-bottom: 1.5rem; }
+.settings-section h2 { font-size: 1.1rem; margin-bottom: 1.2rem; }
+.settings-actions { display: flex; gap: 1rem; }
+
+/* ── Coming Soon ────────────────────────────────── */
+.coming-soon { text-align: center; padding: 3rem; }
+.coming-soon-icon { font-size: 4rem; margin-bottom: 1rem; }
+.coming-soon h2 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+.coming-soon p { color: var(--text-muted); max-width: 400px; margin: 0 auto 1.5rem; }
+.coming-soon-features { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; }
+.feature-tag {
+    padding: 0.3rem 0.8rem; border-radius: 20px;
+    background: var(--bg-card); border: 1px solid var(--border-glass);
+    font-size: 0.8rem; color: var(--text-muted);
+}
+
+/* ── Alerts ─────────────────────────────────────── */
+.alert { padding: 0.8rem 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.9rem; }
+.alert-error { background: rgba(255,107,107,0.12); color: var(--danger); border: 1px solid rgba(255,107,107,0.2); }
+.alert-success { background: rgba(0,206,201,0.12); color: var(--success); border: 1px solid rgba(0,206,201,0.2); }
+
+/* ── Hints / Loader ─────────────────────────────── */
+.hint { color: var(--text-muted); font-size: 0.9rem; }
+.loader {
+    width: 24px; height: 24px; border: 3px solid var(--border-glass);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Animations ─────────────────────────────────── */
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+.card, .admin-card, .settings-section, .location-panel {
+    animation: fadeUp 0.5s ease-out both;
+}
+.location-panel:nth-child(2) { animation-delay: 0.1s; }
+.card:nth-child(2) { animation-delay: 0.1s; }
+.card:nth-child(3) { animation-delay: 0.2s; }
