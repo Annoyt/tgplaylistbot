@@ -73,6 +73,32 @@ jobs:
 
             mkdir -p data /tmp/musicbot
 
+            # Setup nginx reverse proxy (80 -> 8000)
+            if ! command -v nginx &> /dev/null; then
+              apt-get update -qq
+              apt-get install -y -qq nginx
+            fi
+
+            cat > /etc/nginx/sites-available/musicbot << 'NGINX'
+            server {
+                listen 80 default_server;
+                listen [::]:80 default_server;
+                server_name _;
+
+                location / {
+                    proxy_pass http://127.0.0.1:8000;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+            }
+            NGINX
+
+            ln -sf /etc/nginx/sites-available/musicbot /etc/nginx/sites-enabled/musicbot
+            rm -f /etc/nginx/sites-enabled/default
+            nginx -t && systemctl reload nginx
+
             docker compose down || true
             docker compose up -d --build
 
