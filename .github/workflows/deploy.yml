@@ -40,15 +40,16 @@ jobs:
             git checkout ${{ github.ref_name }}
             git pull origin ${{ github.ref_name }}
             
-            # Создать venv
-            if [ ! -f ".venv/bin/python" ]; then
+            # Создать venv с pip
+            if [ ! -f ".venv/bin/pip" ]; then
               echo "Creating virtual environment..."
               rm -rf .venv
-              python3 -m venv .venv
+              python3 -m venv .venv --without-pip
+              .venv/bin/python -m ensurepip --upgrade
             fi
             
-            # Установить зависимости через python -m pip
-            .venv/bin/python -m pip install -r requirements.txt --quiet
+            # Установить зависимости
+            .venv/bin/pip install -r requirements.txt --quiet
             
             # Остановить старый процесс бота если есть
             pkill -f "python.*bot" || true
