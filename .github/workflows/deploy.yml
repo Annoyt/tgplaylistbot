@@ -23,10 +23,20 @@ jobs:
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} 'bash -s' << 'ENDSCRIPT'
             set -e
             
-            # Установить зависимости системы
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update -qq
-            apt-get install -y -qq git python3 python3-pip python3-venv
+            
+            # Установить Docker если нет
+            if ! command -v docker &> /dev/null; then
+              echo "Installing Docker..."
+              apt-get update -qq
+              apt-get install -y -qq ca-certificates curl gnupg
+              install -m 0755 -d /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+              chmod a+r /etc/apt/keyrings/docker.gpg
+              echo "deb [arch=\"$(dpkg --print-architecture)\" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \"$(. /etc/os-release && echo \"$VERSION_CODENAME\")\" stable" > /etc/apt/sources.list.d/docker.list
+              apt-get update -qq
+              apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            fi
             
             # Создать папку проекта
             PROJECT_DIR="/root/tgplaylistbot"
@@ -40,23 +50,18 @@ jobs:
             git checkout ${{ github.ref_name }}
             git pull origin ${{ github.ref_name }}
             
-            # Создать venv с pip
-            if [ ! -f ".venv/bin/pip" ]; then
-              echo "Creating virtual environment..."
-              rm -rf .venv
-              python3 -m venv .venv --without-pip
-              .venv/bin/python -m ensurepip --upgrade
+            # Запустить через Docker Compose
+            if [ -f "docker-compose.yml" ]; then
+              docker compose down || true
+              docker compose up -d --build
+            else
+              # Собрать и запустить Dockerfile
+              docker stop tgplaylistbot || true
+              docker rm tgplaylistbot || true
+              docker build -t tgplaylistbot .
+              docker run -d --name tgplaylistbot --restart unless-stopped -p 8000:8000 tgplaylistbot
             fi
             
-            # Установить зависимости
-            .venv/bin/pip install -r requirements.txt --quiet
-            
-            # Остановить старый процесс бота если есть
-            pkill -f "python.*bot" || true
-            
-            # Запустить бота в фоне
-            nohup .venv/bin/python -m bot > bot.log 2>&1 &
-            
-            echo "✅ Деплой завершён! Бот запущен."
-            echo "Логи: tail -f /root/tgplaylistbot/bot.log"
+            echo "✅ Деплой завершён!"
+            docker ps | grep tgplaylistbot || echo "Проверьте: docker logs tgplaylistbot"
           ENDSCRIPT
