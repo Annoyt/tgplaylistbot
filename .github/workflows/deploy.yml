@@ -8,24 +8,42 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.8.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-      
+
       - name: Add host to known hosts
         run: ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
-      
-      - name: Deploy to server
+
+      - name: Write .env file
+        run: |
+          cat > /tmp/deploy_env << EOF
+          SECRET_KEY=${{ secrets.SECRET_KEY }}
+          ADMIN_USERNAME=${{ secrets.ADMIN_USERNAME }}
+          ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
+          OPENWEATHERMAP_API_KEY=${{ secrets.OPENWEATHERMAP_API_KEY }}
+          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
+          VK_TOKEN=${{ secrets.VK_TOKEN }}
+          SPOTIFY_CLIENT_ID=${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET=${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          ACOUSTID_API_KEY=${{ secrets.ACOUSTID_API_KEY }}
+          MAX_FILE_SIZE_MB=49
+          DOWNLOAD_DIR=/tmp/musicbot
+          EOF
+
+      - name: Upload .env to server
+        run: scp /tmp/deploy_env ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/deploy_env
+
+      - name: Deploy
         run: |
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} 'bash -s' << 'ENDSCRIPT'
             set -e
-            
             export DEBIAN_FRONTEND=noninteractive
-            
-            # Установить Docker если нет
+
+            # Install Docker if needed
             if ! command -v docker &> /dev/null; then
               echo "Installing Docker..."
               apt-get update -qq
@@ -37,60 +55,27 @@ jobs:
               apt-get update -qq
               apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
             fi
-            
-            # Создать папку проекта
+
+            # Clone or update
             PROJECT_DIR="/root/tgplaylistbot"
             if [ ! -d "$PROJECT_DIR" ]; then
-              echo "Cloning repository..."
               git clone https://github.com/Annoyt/tgplaylistbot.git "$PROJECT_DIR"
             fi
-            
+
             cd "$PROJECT_DIR"
             git fetch origin
-            git checkout ${{ github.ref_name }}
-            git pull origin ${{ github.ref_name }}
-            
-            # Создать .env из GitHub Secrets
-            if [ ! -f ".env" ]; then
-              echo "Creating .env file from secrets..."
-            fi
-            cat > .env << 'ENVFILE'
-# ── Web Platform ──────────────────────────────
-SECRET_KEY=${{ secrets.SECRET_KEY }}
-ADMIN_USERNAME=${{ secrets.ADMIN_USERNAME }}
-ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
+            BRANCH=$(git rev-parse --abbrev-ref HEAD)
+            git pull origin "$BRANCH"
 
-# ── OpenWeatherMap ────────────────────────────
-OPENWEATHERMAP_API_KEY=${{ secrets.OPENWEATHERMAP_API_KEY }}
+            # Move .env
+            cp /tmp/deploy_env .env
+            rm -f /tmp/deploy_env
 
-# ── Telegram MusicBot ─────────────────────────
-TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
-
-# ── VK Music ──────────────────────────────────
-VK_TOKEN=${{ secrets.VK_TOKEN }}
-
-# ── Spotify ───────────────────────────────────
-SPOTIFY_CLIENT_ID=${{ secrets.SPOTIFY_CLIENT_ID }}
-SPOTIFY_CLIENT_SECRET=${{ secrets.SPOTIFY_CLIENT_SECRET }}
-
-# ── AcoustID ──────────────────────────────────
-ACOUSTID_API_KEY=${{ secrets.ACOUSTID_API_KEY }}
-
-# ── Limits ────────────────────────────────────
-MAX_FILE_SIZE_MB=49
-DOWNLOAD_DIR=/tmp/musicbot
-ENVFILE
-            
-            # Создать папку для данных
             mkdir -p data /tmp/musicbot
-            
-            # Запустить через Docker Compose
+
             docker compose down || true
             docker compose up -d --build
-            
-            echo "✅ Деплой завершён!"
-            echo ""
-            echo "⚠️  НЕ ЗАБУДЬТЕ: Отредактировать /root/tgplaylistbot/.env на сервере!"
-            echo "Проверка статуса: docker ps | grep musicbot"
-            echo "Логи: docker logs -f musicbot-platform"
+
+            echo "Deploy complete!"
+            docker ps | grep musicbot || true
           ENDSCRIPT
