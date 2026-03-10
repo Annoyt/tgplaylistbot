@@ -50,18 +50,39 @@ jobs:
             git checkout ${{ github.ref_name }}
             git pull origin ${{ github.ref_name }}
             
-            # Запустить через Docker Compose
-            if [ -f "docker-compose.yml" ]; then
-              docker compose down || true
-              docker compose up -d --build
-            else
-              # Собрать и запустить Dockerfile
-              docker stop tgplaylistbot || true
-              docker rm tgplaylistbot || true
-              docker build -t tgplaylistbot .
-              docker run -d --name tgplaylistbot --restart unless-stopped -p 8000:8000 tgplaylistbot
+            # Создать .env если нет
+            if [ ! -f ".env" ]; then
+              echo "Creating .env file..."
+              cat > .env << 'ENVFILE'
+# Telegram Bot Token (замените на свой)
+BOT_TOKEN=your_bot_token_here
+
+# VK API
+VK_TOKEN=your_vk_token_here
+
+# Spotify API
+SPOTIFY_CLIENT_ID=your_spotify_client_id
+SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+
+# Database
+DATABASE_URL=sqlite:///data/bot.db
+
+# Environment
+ENV=production
+ENVFILE
+              echo "⚠️  ВАЖНО: Отредактируйте /root/tgplaylistbot/.env и вставьте реальные токены!"
             fi
             
+            # Создать папку для данных
+            mkdir -p data /tmp/musicbot
+            
+            # Запустить через Docker Compose
+            docker compose down || true
+            docker compose up -d --build
+            
             echo "✅ Деплой завершён!"
-            docker ps | grep tgplaylistbot || echo "Проверьте: docker logs tgplaylistbot"
+            echo ""
+            echo "⚠️  НЕ ЗАБУДЬТЕ: Отредактировать /root/tgplaylistbot/.env на сервере!"
+            echo "Проверка статуса: docker ps | grep musicbot"
+            echo "Логи: docker logs -f musicbot-platform"
           ENDSCRIPT
