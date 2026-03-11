@@ -8,100 +8,53 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.8.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
+      
       - name: Add host to known hosts
         run: ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
-
-      - name: Write .env file
-        run: |
-          cat > /tmp/deploy_env << EOF
-          SECRET_KEY=${{ secrets.SECRET_KEY }}
-          ADMIN_USERNAME=${{ secrets.ADMIN_USERNAME }}
-          ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
-          OPENWEATHERMAP_API_KEY=${{ secrets.OPENWEATHERMAP_API_KEY }}
-          TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}
-          VK_TOKEN=${{ secrets.VK_TOKEN }}
-          SPOTIFY_CLIENT_ID=${{ secrets.SPOTIFY_CLIENT_ID }}
-          SPOTIFY_CLIENT_SECRET=${{ secrets.SPOTIFY_CLIENT_SECRET }}
-          ACOUSTID_API_KEY=${{ secrets.ACOUSTID_API_KEY }}
-          MAX_FILE_SIZE_MB=49
-          DOWNLOAD_DIR=/tmp/musicbot
-          EOF
-
-      - name: Upload .env to server
-        run: scp /tmp/deploy_env ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/deploy_env
-
-      - name: Deploy
+      
+      - name: Deploy to server
         run: |
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} 'bash -s' << 'ENDSCRIPT'
             set -e
-            export DEBIAN_FRONTEND=noninteractive
-
-            # Install Docker if needed
-            if ! command -v docker &> /dev/null; then
-              echo "Installing Docker..."
-              apt-get update -qq
-              apt-get install -y -qq ca-certificates curl gnupg
-              install -m 0755 -d /etc/apt/keyrings
-              curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-              chmod a+r /etc/apt/keyrings/docker.gpg
-              echo "deb [arch=\"$(dpkg --print-architecture)\" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \"$(. /etc/os-release && echo \"$VERSION_CODENAME\")\" stable" > /etc/apt/sources.list.d/docker.list
-              apt-get update -qq
-              apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-            fi
-
-            # Clone or update
+            
+            # Установить зависимости системы
+            apt-get update -qq
+            apt-get install -y -qq git python3 python3-pip python3-venv
+            
+            # Создать папку проекта
             PROJECT_DIR="/root/tgplaylistbot"
             if [ ! -d "$PROJECT_DIR" ]; then
+              echo "Cloning repository..."
               git clone https://github.com/Annoyt/tgplaylistbot.git "$PROJECT_DIR"
             fi
-
+            
             cd "$PROJECT_DIR"
             git fetch origin
-            BRANCH=$(git rev-parse --abbrev-ref HEAD)
-            git pull origin "$BRANCH"
-
-            # Move .env
-            cp /tmp/deploy_env .env
-            rm -f /tmp/deploy_env
-
-            mkdir -p data /tmp/musicbot
-
-            # Setup nginx reverse proxy (80 -> 8000)
-            if ! command -v nginx &> /dev/null; then
-              apt-get update -qq
-              apt-get install -y -qq nginx
+            git checkout ${{ github.ref_name }}
+            git pull origin ${{ github.ref_name }}
+            
+            # Создать venv
+            if [ ! -d ".venv" ]; then
+              python3 -m venv .venv
             fi
-
-            cat > /etc/nginx/sites-available/musicbot << 'NGINX'
-            server {
-                listen 80 default_server;
-                listen [::]:80 default_server;
-                server_name _;
-
-                location / {
-                    proxy_pass http://127.0.0.1:8000;
-                    proxy_set_header Host $host;
-                    proxy_set_header X-Real-IP $remote_addr;
-                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                    proxy_set_header X-Forwarded-Proto $scheme;
-                }
-            }
-            NGINX
-
-            ln -sf /etc/nginx/sites-available/musicbot /etc/nginx/sites-enabled/musicbot
-            rm -f /etc/nginx/sites-enabled/default
-            nginx -t && systemctl reload nginx
-
-            docker compose down || true
-            docker compose up -d --build
-
-            echo "Deploy complete!"
-            docker ps | grep musicbot || true
+            source .venv/bin/activate
+            
+            # Установить зависимости
+            pip install -r requirements.txt --quiet
+            
+            # Остановить старый процесс бота если есть
+            pkill -f "python -m bot" || true
+            pkill -f "uvicorn" || true
+            
+            # Запустить бота в фоне
+            nohup python -m bot > bot.log 2>&1 &
+            
+            echo "✅ Деплой завершён! Бот запущен."
+            echo "Логи: tail -f /root/tgplaylistbot/bot.log"
           ENDSCRIPT

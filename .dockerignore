@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+.agents/
+.gemini/
+*.md
+__pycache__
+*.pyc
+data/
+logs/
+kimi_prompt.txt
+gemini_context.md
+AI_AGENT_ARCHITECTURE.md
+docs/
+mkdocs.yml
+serve-docs.sh
+.github/

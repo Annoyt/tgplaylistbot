@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12.8-slim-bookworm
 
 # System deps: ffmpeg for audio processing
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,6 +16,11 @@ COPY . .
 
 # Create dirs
 RUN mkdir -p /tmp/musicbot data
+
+# Run as non-root
+RUN addgroup --system app && adduser --system --ingroup app app
+RUN chown -R app:app /app /tmp/musicbot
+USER app
 
 EXPOSE 8000
 

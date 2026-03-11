@@ -36,3 +36,10 @@ templates = Jinja2Templates(directory="app/templates")
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint for monitoring and Docker."""
+    return {"status": "ok", "service": "musicbot-platform"}
+

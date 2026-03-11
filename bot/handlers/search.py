@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import OrderedDict
 from typing import Any
 
 from aiogram import F, Router
@@ -18,7 +19,8 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 # In-memory cache for search results per user (user_id -> list[TrackInfo])
-_search_cache: dict[int, list[TrackInfo]] = {}
+_MAX_CACHE = 500
+_search_cache: OrderedDict[int, list[TrackInfo]] = OrderedDict()
 
 
 def _format_results(tracks: list[TrackInfo], page: int, per_page: int, total: int) -> str:
@@ -64,9 +66,11 @@ async def text_search(message: Message) -> None:
             await status_msg.edit_text("😔 Ничего не найдено")
             return
 
-        # Cache results
+        # Cache results (evict oldest if over limit)
         user_id = message.from_user.id
         _search_cache[user_id] = all_tracks
+        if len(_search_cache) > _MAX_CACHE:
+            _search_cache.popitem(last=False)
 
         # Display first page
         per_page = 10
@@ -77,7 +81,7 @@ async def text_search(message: Message) -> None:
 
     except Exception as e:
         logger.error("Search failed: %s", e)
-        await status_msg.edit_text(f"❌ Ошибка поиска: {e}")
+        await status_msg.edit_text("❌ Произошла ошибка при поиске. Попробуйте позже.")
 
 
 def get_cached_tracks(user_id: int) -> list[TrackInfo]:

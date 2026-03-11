@@ -19,3 +19,12 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# AI Agents & PRD
+.agents/
+kimi_prompt.txt
+gemini_context.md
+AI_AGENT_ARCHITECTURE.md
+docs/
+mkdocs.yml
+serve-docs.sh

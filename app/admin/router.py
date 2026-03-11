@@ -1,11 +1,11 @@
 """Admin panel router — protected by JWT auth."""
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.auth.dependencies import get_current_user
-from app.db.database import get_db
+from app.db.database import get_db_ctx
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 templates = Jinja2Templates(directory="app/templates")
@@ -18,13 +18,10 @@ async def admin_dashboard(request: Request, user: dict = Depends(get_current_use
 
 @router.get("/musicbot", response_class=HTMLResponse)
 async def musicbot_settings(request: Request, user: dict = Depends(get_current_user)):
-    db = await get_db()
-    try:
+    async with get_db_ctx() as db:
         rows = await db.execute("SELECT key, value FROM bot_settings")
         settings_rows = await rows.fetchall()
         bot_settings = {row["key"]: row["value"] for row in settings_rows}
-    finally:
-        await db.close()
     return templates.TemplateResponse(
         "admin/musicbot.html",
         {"request": request, "user": user, "bot_settings": bot_settings},
@@ -34,8 +31,7 @@ async def musicbot_settings(request: Request, user: dict = Depends(get_current_u
 @router.post("/musicbot")
 async def save_musicbot_settings(request: Request, user: dict = Depends(get_current_user)):
     form = await request.form()
-    db = await get_db()
-    try:
+    async with get_db_ctx() as db:
         for key in [
             "telegram_bot_token",
             "vk_token",
@@ -52,10 +48,7 @@ async def save_musicbot_settings(request: Request, user: dict = Depends(get_curr
                 (key, value),
             )
         await db.commit()
-    finally:
-        await db.close()
 
-    from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/admin/musicbot?saved=1", status_code=303)
 
 

@@ -8,7 +8,6 @@ from aiogram import Bot, Dispatcher
 
 from config import settings
 from app.main import app as fastapi_app
-from app.db.database import init_db
 
 # Bot handlers
 from bot.handlers.start import router as start_router
@@ -60,7 +59,6 @@ async def run_bot() -> None:
 
 async def main() -> None:
     """Run web + bot concurrently."""
-    await init_db()
     logger.info("🚀 Starting Platform...")
 
     await asyncio.gather(

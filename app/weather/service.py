@@ -14,6 +14,11 @@ class WeatherService:
     def __init__(self) -> None:
         self._key = settings.openweathermap_api_key
         self._client: httpx.AsyncClient | None = None
+        if not self._key:
+            import logging
+            logging.getLogger(__name__).warning(
+                "⚠️ OPENWEATHERMAP_API_KEY not set — weather features disabled"
+            )
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
