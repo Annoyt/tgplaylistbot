@@ -41,12 +41,15 @@ jobs:
             git checkout feature/platform-musicbot
             git pull origin feature/platform-musicbot
 
-            # Создать venv если нет
-            if [ ! -d ".venv" ]; then
+            # Создать или пересоздать venv если сломан
+            if [ ! -f ".venv/bin/pip" ]; then
+              echo "Creating virtual environment..."
+              rm -rf .venv
               python3 -m venv .venv
             fi
 
             # Установить зависимости через полный путь к pip в venv
+            .venv/bin/pip install --upgrade pip --quiet
             .venv/bin/pip install -r requirements.txt --quiet
 
             # Остановить старые процессы если есть
