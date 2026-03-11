@@ -15,8 +15,30 @@
             <div class="admin-card-icon">🌦</div>
             <h3>WeatherBot</h3>
             <p>Прогноз погоды в Telegram</p>
-            <span class="status-badge status-pending">Coming Soon</span>
+            <span class="status-badge status-active">Активен</span>
         </a>
     </div>
+
+    <form method="post" action="/admin/password" class="settings-form glass" style="margin-top: 2rem;">
+        <h2 class="form-title">🔑 Смена пароля</h2>
+        {% if request.query_params.get("pwd_saved") %}
+        <div class="alert alert-success">Пароль успешно изменён!</div>
+        {% elif request.query_params.get("pwd_error") %}
+        <div class="alert alert-error">Пароли не совпадают или слишком короткие!</div>
+        {% endif %}
+        <div class="form-group row">
+            <div class="form-col">
+                <label for="new_password">Новый пароль</label>
+                <input type="password" id="new_password" name="new_password" required minlength="6" placeholder="••••••••">
+            </div>
+            <div class="form-col">
+                <label for="confirm_password">Повторите пароль</label>
+                <input type="password" id="confirm_password" name="confirm_password" required minlength="6" placeholder="••••••••">
+            </div>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary btn-danger">Изменить пароль</button>
+        </div>
+    </form>
 </div>
 {% endblock %}

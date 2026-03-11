@@ -6,6 +6,7 @@ from fastapi.templating import Jinja2Templates
 
 from config import settings
 from app.auth.service import create_access_token, verify_password, hash_password
+from app.db.database import get_db_ctx
 
 router = APIRouter(tags=["auth"])
 templates = Jinja2Templates(directory="app/templates")
@@ -25,7 +26,17 @@ async def login(request: Request):
     username = form.get("username", "")
     password = form.get("password", "")
 
-    if username == settings.admin_username and verify_password(password, _admin_hash):
+    # Check for custom password in DB, fallback to .env hash
+    db_hash = None
+    async with get_db_ctx() as db:
+        rows = await db.execute("SELECT value FROM bot_settings WHERE key = 'admin_password_hash'")
+        row = await rows.fetchone()
+        if row and row["value"]:
+            db_hash = row["value"]
+            
+    valid_hash = db_hash if db_hash else _admin_hash
+
+    if username == settings.admin_username and verify_password(password, valid_hash):
         token = create_access_token({"sub": username, "role": "admin"})
         response = RedirectResponse(url="/admin/", status_code=303)
         response.set_cookie(

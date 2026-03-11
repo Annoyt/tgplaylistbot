@@ -6,6 +6,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.auth.dependencies import get_current_user
 from app.db.database import get_db_ctx
+from app.auth.service import hash_password
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 templates = Jinja2Templates(directory="app/templates")
@@ -14,6 +15,25 @@ templates = Jinja2Templates(directory="app/templates")
 @router.get("/", response_class=HTMLResponse)
 async def admin_dashboard(request: Request, user: dict = Depends(get_current_user)):
     return templates.TemplateResponse("admin/dashboard.html", {"request": request, "user": user})
+
+@router.post("/password")
+async def change_password(request: Request, user: dict = Depends(get_current_user)):
+    form = await request.form()
+    new_pwd = form.get("new_password", "")
+    confirm_pwd = form.get("confirm_password", "")
+
+    if not new_pwd or new_pwd != confirm_pwd or len(new_pwd) < 6:
+        return RedirectResponse(url="/admin/?pwd_error=1", status_code=303)
+
+    hashed = hash_password(new_pwd)
+    async with get_db_ctx() as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)",
+            ("admin_password_hash", hashed),
+        )
+        await db.commit()
+
+    return RedirectResponse(url="/admin/?pwd_saved=1", status_code=303)
 
 
 @router.get("/musicbot", response_class=HTMLResponse)
@@ -54,4 +74,25 @@ async def save_musicbot_settings(request: Request, user: dict = Depends(get_curr
 
 @router.get("/weatherbot", response_class=HTMLResponse)
 async def weatherbot_settings(request: Request, user: dict = Depends(get_current_user)):
-    return templates.TemplateResponse("admin/weatherbot.html", {"request": request, "user": user})
+    async with get_db_ctx() as db:
+        rows = await db.execute("SELECT key, value FROM bot_settings WHERE key = 'openweathermap_api_key'")
+        settings_rows = await rows.fetchall()
+        bot_settings = {row["key"]: row["value"] for row in settings_rows}
+    return templates.TemplateResponse(
+        "admin/weatherbot.html", 
+        {"request": request, "user": user, "bot_settings": bot_settings}
+    )
+
+@router.post("/weatherbot")
+async def save_weatherbot_settings(request: Request, user: dict = Depends(get_current_user)):
+    form = await request.form()
+    async with get_db_ctx() as db:
+        key = "openweathermap_api_key"
+        value = form.get(key, "")
+        await db.execute(
+            "INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        await db.commit()
+
+    return RedirectResponse(url="/admin/weatherbot?saved=1", status_code=303)

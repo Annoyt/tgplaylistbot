@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 from config import settings
+from app.db.database import get_db_ctx
 
 BASE = "https://api.openweathermap.org"
 
@@ -12,13 +13,16 @@ class WeatherService:
     """Async OpenWeatherMap API wrapper."""
 
     def __init__(self) -> None:
-        self._key = settings.openweathermap_api_key
+        self._env_key = settings.openweathermap_api_key
         self._client: httpx.AsyncClient | None = None
-        if not self._key:
-            import logging
-            logging.getLogger(__name__).warning(
-                "⚠️ OPENWEATHERMAP_API_KEY not set — weather features disabled"
-            )
+
+    async def _get_api_key(self) -> str:
+        async with get_db_ctx() as db:
+            rows = await db.execute("SELECT value FROM bot_settings WHERE key = 'openweathermap_api_key'")
+            row = await rows.fetchone()
+            if row and row["value"]:
+                return row["value"]
+        return self._env_key
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -34,9 +38,10 @@ class WeatherService:
     async def geocode(self, city: str) -> dict | None:
         """City name → {lat, lon, name, country}."""
         client = await self._get_client()
+        key = await self._get_api_key()
         r = await client.get(
             f"{BASE}/geo/1.0/direct",
-            params={"q": city, "limit": 1, "appid": self._key},
+            params={"q": city, "limit": 1, "appid": key},
         )
         data = r.json()
         if not data:
@@ -47,9 +52,10 @@ class WeatherService:
     async def reverse_geocode(self, lat: float, lon: float) -> dict | None:
         """Coords → city name."""
         client = await self._get_client()
+        key = await self._get_api_key()
         r = await client.get(
             f"{BASE}/geo/1.0/reverse",
-            params={"lat": lat, "lon": lon, "limit": 1, "appid": self._key},
+            params={"lat": lat, "lon": lon, "limit": 1, "appid": key},
         )
         data = r.json()
         if not data:
@@ -61,9 +67,10 @@ class WeatherService:
 
     async def get_current(self, lat: float, lon: float) -> dict:
         client = await self._get_client()
+        key = await self._get_api_key()
         r = await client.get(
             f"{BASE}/data/2.5/weather",
-            params={"lat": lat, "lon": lon, "appid": self._key, "units": "metric", "lang": "ru"},
+            params={"lat": lat, "lon": lon, "appid": key, "units": "metric", "lang": "ru"},
         )
         return r.json()
 
@@ -71,9 +78,10 @@ class WeatherService:
 
     async def get_air_quality(self, lat: float, lon: float) -> dict:
         client = await self._get_client()
+        key = await self._get_api_key()
         r = await client.get(
             f"{BASE}/data/2.5/air_pollution",
-            params={"lat": lat, "lon": lon, "appid": self._key},
+            params={"lat": lat, "lon": lon, "appid": key},
         )
         return r.json()
 
@@ -82,10 +90,11 @@ class WeatherService:
     async def get_forecast(self, lat: float, lon: float, days: int = 7) -> dict:
         """Get weather forecast. Free plan gives 5-day/3h; paid gives daily up to 16d."""
         client = await self._get_client()
+        key = await self._get_api_key()
         cnt = min(days * 8, 40)  # 3h intervals, max 40 = 5 days on free
         r = await client.get(
             f"{BASE}/data/2.5/forecast",
-            params={"lat": lat, "lon": lon, "cnt": cnt, "appid": self._key, "units": "metric", "lang": "ru"},
+            params={"lat": lat, "lon": lon, "cnt": cnt, "appid": key, "units": "metric", "lang": "ru"},
         )
         return r.json()
 
@@ -94,9 +103,10 @@ class WeatherService:
     async def get_history(self, lat: float, lon: float, dt: int) -> dict:
         """Get historical weather for a Unix timestamp. Requires One Call 3.0."""
         client = await self._get_client()
+        key = await self._get_api_key()
         r = await client.get(
             f"{BASE}/data/3.0/onecall/timemachine",
-            params={"lat": lat, "lon": lon, "dt": dt, "appid": self._key, "units": "metric", "lang": "ru"},
+            params={"lat": lat, "lon": lon, "dt": dt, "appid": key, "units": "metric", "lang": "ru"},
         )
         return r.json()
 

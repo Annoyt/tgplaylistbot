@@ -7,16 +7,21 @@
         <a href="/admin/" class="btn btn-ghost">← Назад</a>
         <h1 class="page-title">🌦 WeatherBot</h1>
     </div>
-    <section class="settings-section glass coming-soon">
-        <div class="coming-soon-icon">🌦</div>
-        <h2>Coming Soon</h2>
-        <p>Telegram-бот для прогноза погоды. Будет присылать прогнозы по запросу с разными характеристиками.</p>
-        <div class="coming-soon-features">
-            <span class="feature-tag">Прогноз по локации</span>
-            <span class="feature-tag">Качество воздуха</span>
-            <span class="feature-tag">Оповещения об осадках</span>
-            <span class="feature-tag">Утренние дайджесты</span>
+    <form method="post" action="/admin/weatherbot" class="settings-form glass">
+        <h2 class="form-title">Ключи доступа</h2>
+        {% if request.query_params.get("saved") %}
+        <div class="alert alert-success">Настройки сохранены!</div>
+        {% endif %}
+        <div class="form-group row">
+            <div class="form-col">
+                <label for="openweathermap_api_key">OpenWeatherMap API Key</label>
+                <input type="password" id="openweathermap_api_key" name="openweathermap_api_key" value="{{ bot_settings.get('openweathermap_api_key', '') }}" placeholder="sk-...">
+                <small class="help-text">Ключ для получения прогноза погоды и качества воздуха.</small>
+            </div>
         </div>
-    </section>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">💾 Сохранить настройки</button>
+        </div>
+    </form>
 </div>
 {% endblock %}
