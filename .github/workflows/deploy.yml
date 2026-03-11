@@ -8,53 +8,57 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.8.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-      
+
       - name: Add host to known hosts
         run: ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
-      
+
       - name: Deploy to server
         run: |
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} 'bash -s' << 'ENDSCRIPT'
             set -e
-            
+
+            export DEBIAN_FRONTEND=noninteractive
+
             # Установить зависимости системы
             apt-get update -qq
-            apt-get install -y -qq git python3 python3-pip python3-venv
-            
+            apt-get install -y -qq git python3 python3-pip python3-venv python3-full
+
             # Создать папку проекта
             PROJECT_DIR="/root/tgplaylistbot"
             if [ ! -d "$PROJECT_DIR" ]; then
               echo "Cloning repository..."
               git clone https://github.com/Annoyt/tgplaylistbot.git "$PROJECT_DIR"
             fi
-            
+
             cd "$PROJECT_DIR"
             git fetch origin
-            git checkout ${{ github.ref_name }}
-            git pull origin ${{ github.ref_name }}
-            
-            # Создать venv
+            git checkout feature/platform-musicbot
+            git pull origin feature/platform-musicbot
+
+            # Создать venv если нет
             if [ ! -d ".venv" ]; then
               python3 -m venv .venv
             fi
-            source .venv/bin/activate
-            
-            # Установить зависимости
-            pip install -r requirements.txt --quiet
-            
-            # Остановить старый процесс бота если есть
-            pkill -f "python -m bot" || true
+
+            # Установить зависимости через полный путь к pip в venv
+            .venv/bin/pip install -r requirements.txt --quiet
+
+            # Остановить старые процессы если есть
+            pkill -f "python.*run.py" || true
             pkill -f "uvicorn" || true
-            
-            # Запустить бота в фоне
-            nohup python -m bot > bot.log 2>&1 &
-            
-            echo "✅ Деплой завершён! Бот запущен."
+            sleep 2
+
+            # Запустить платформу в фоне (FastAPI + Bot)
+            nohup .venv/bin/python run.py > bot.log 2>&1 &
+
+            sleep 3
+            echo "✅ Деплой завершён!"
+            echo "PID: $(pgrep -f 'python.*run.py' || echo 'NOT RUNNING')"
             echo "Логи: tail -f /root/tgplaylistbot/bot.log"
           ENDSCRIPT
