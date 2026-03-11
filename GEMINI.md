@@ -16,3 +16,9 @@ Welcome to the `tgplaylistbot` project!
 - Check `.agents/skills/` if you need detailed expertise on security audits, deployment, or our FastAPI/aiogram integration.
 - If you change the frontend (`app/templates/` or `app/static/`), keep the "dark theme / glassmorphism" aesthetics intact.
 - If you deploy, run `/deploy` command via Gemini CLI or see the `.github/workflows/deploy.yml`.
+
+> [!CAUTION]
+> **Strict Security & Privacy Rules for AI Agents:**
+> 1. NEVER commit `.agents/`, `SKILL.md`, `GEMINI.md`, or any prompt files (`.txt`, `.md`) to the public repository. They must remain local/untracked in the `.gitignore`.
+> 2. NEVER commit SSH keys, API tokens, passwords, or files containing VPN IPs (e.g. `212.60.153.212`), `3x-ui` ports, or credentials.
+> 3. If you generate a deployment script, rely EXCLUSIVELY on GitHub Secrets (e.g. `${{ secrets.SERVER_IP }}`) and `.env.example`.
