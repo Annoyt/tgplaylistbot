@@ -1,0 +1,10 @@
+prompt = """
+Execute the following commands to commit all changes and push to `feature/platform-musicbot`, which will trigger the GitHub Actions deployment:
+
+1. `git add -A`
+2. `git commit -m "chore(deploy): trigger manual deployment via Gemini CLI"`
+3. `git push origin feature/platform-musicbot`
+
+After pushing, provide a helpful summary indicating that the Action has been triggered and how to check its status (e.g., by visiting the GitHub Actions tab or using the `gh run list` command).
+"""
+description = "Quickly commit and push all changes to trigger GitHub Actions deployment"

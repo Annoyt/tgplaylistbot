@@ -1,0 +1,11 @@
+prompt = """
+Connect to the production server via SSH and tail the Docker logs of the music bot.
+Run the following command exactly as written to view the last 100 lines of logs from the bot:
+
+```bash
+ssh -i ~/.ssh/id_ed25519 root@212.60.153.212 "docker logs --tail 100 musicbot-platform"
+```
+
+Then, analyze the output. If there are any stack traces, errors, or anomalies, summarize them and propose a potential fix.
+"""
+description = "SSH into the server and analyze the last 100 lines of the Docker logs"
