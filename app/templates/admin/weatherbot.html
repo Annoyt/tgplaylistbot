@@ -15,8 +15,11 @@
         <div class="form-group row">
             <div class="form-col">
                 <label for="openweathermap_api_key">OpenWeatherMap API Key</label>
-                <input type="password" id="openweathermap_api_key" name="openweathermap_api_key" value="{{ bot_settings.get('openweathermap_api_key', '') }}" placeholder="sk-...">
-                <small class="help-text">Ключ для получения прогноза погоды и качества воздуха.</small>
+                <div class="input-secret" style="display: flex; gap: 5px;">
+                    <input type="password" id="openweathermap_api_key" class="form-control" name="openweathermap_api_key" value="{{ bot_settings.get('openweathermap_api_key', '') }}" placeholder="sk-..." style="flex: 1;">
+                    <button type="button" class="btn btn-ghost" onclick="checkWeatherKey()" title="Проверить ключ без сохранения">Проверить</button>
+                </div>
+                <small id="weather_key_status" class="help-text">Ключ для получения прогноза погоды и качества воздуха.</small>
             </div>
         </div>
         <div class="form-actions">
@@ -24,4 +27,42 @@
         </div>
     </form>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function checkWeatherKey() {
+    const key = document.getElementById('openweathermap_api_key').value;
+    const statusEl = document.getElementById('weather_key_status');
+    statusEl.innerHTML = '⏳ Проверка...';
+    statusEl.style.color = 'inherit';
+    
+    if (!key) {
+        statusEl.innerHTML = '❌ Введите ключ API';
+        statusEl.style.color = '#ff6b6b';
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('openweathermap_api_key', key);
+    
+    try {
+        const res = await fetch('/admin/verify/weather', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+        
+        if(data.ok) {
+            statusEl.innerHTML = '✅ API Ключ валиден';
+            statusEl.style.color = '#a3d162';
+        } else {
+            statusEl.innerHTML = `❌ Ошибка: ${data.error}`;
+            statusEl.style.color = '#ff6b6b';
+        }
+    } catch(err) {
+        statusEl.innerHTML = '❌ Ошибка сети при проверке';
+        statusEl.style.color = '#ff6b6b';
+    }
+}
+</script>
 {% endblock %}

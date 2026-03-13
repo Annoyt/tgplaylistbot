@@ -21,7 +21,9 @@
                     <input type="password" id="telegram_bot_token" name="telegram_bot_token"
                         value="{{ bot_settings.get('telegram_bot_token', '') }}" placeholder="123456:ABC-DEF...">
                     <button type="button" class="btn-eye" onclick="toggleSecret(this)">👁</button>
+                    <button type="button" class="btn btn-ghost" onclick="checkTelegramToken()" style="margin-left: 5px;" title="Проверить токен без сохранения">Проверить</button>
                 </div>
+                <small id="tg_token_status" class="help-text"></small>
             </div>
             <div class="form-group">
                 <label for="vk_token">VK User Token</label>
@@ -93,6 +95,41 @@ function toggleSecret(btn) {
     const input = btn.previousElementSibling;
     input.type = input.type === 'password' ? 'text' : 'password';
     btn.textContent = input.type === 'password' ? '👁' : '🙈';
+}
+
+async function checkTelegramToken() {
+    const token = document.getElementById('telegram_bot_token').value;
+    const statusEl = document.getElementById('tg_token_status');
+    statusEl.innerHTML = '⏳ Проверка...';
+    statusEl.style.color = 'inherit';
+    
+    if (!token) {
+        statusEl.innerHTML = '❌ Введите токен';
+        statusEl.style.color = '#ff6b6b';
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('telegram_bot_token', token);
+    
+    try {
+        const res = await fetch('/admin/verify/telegram', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+        
+        if(data.ok) {
+            statusEl.innerHTML = `✅ Токен работает. Бот: <strong>@${data.username}</strong>`;
+            statusEl.style.color = '#a3d162';
+        } else {
+            statusEl.innerHTML = `❌ Ошибка: ${data.error}`;
+            statusEl.style.color = '#ff6b6b';
+        }
+    } catch(err) {
+        statusEl.innerHTML = '❌ Ошибка сети при проверке';
+        statusEl.style.color = '#ff6b6b';
+    }
 }
 </script>
 {% endblock %}

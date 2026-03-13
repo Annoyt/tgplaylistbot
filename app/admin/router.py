@@ -96,3 +96,46 @@ async def save_weatherbot_settings(request: Request, user: dict = Depends(get_cu
         await db.commit()
 
     return RedirectResponse(url="/admin/weatherbot?saved=1", status_code=303)
+
+
+@router.post("/verify/telegram")
+async def verify_telegram_token(request: Request, user: dict = Depends(get_current_user)):
+    form = await request.form()
+    token = form.get("telegram_bot_token")
+    if not token:
+        return {"ok": False, "error": "Токен не предоставлен"}
+    
+    url = f"https://api.telegram.org/bot{token}/getMe"
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    bot_username = data["result"].get("username", "")
+                    return {"ok": True, "username": bot_username}
+                else:
+                    return {"ok": False, "error": data.get("description", "Unknown error")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/verify/weather")
+async def verify_weather_api(request: Request, user: dict = Depends(get_current_user)):
+    form = await request.form()
+    key = form.get("openweathermap_api_key")
+    if not key:
+        return {"ok": False, "error": "Ключ не предоставлен"}
+    
+    url = f"https://api.openweathermap.org/data/2.5/weather?q=London&appid={key}"
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                data = await resp.json()
+                if resp.status == 200:
+                    return {"ok": True}
+                else:
+                    return {"ok": False, "error": data.get("message", "Unknown error")}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

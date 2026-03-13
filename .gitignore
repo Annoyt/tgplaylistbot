@@ -22,6 +22,7 @@ logs/
 
 # AI Agents & PRD
 .agents/
+.claude/
 kimi_prompt.txt
 gemini_context.md
 AI_AGENT_ARCHITECTURE.md
