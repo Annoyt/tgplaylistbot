@@ -41,27 +41,11 @@ jobs:
             git checkout feature/platform-musicbot
             git pull origin feature/platform-musicbot
 
-            # Создать или пересоздать venv если сломан
-            if [ ! -f ".venv/bin/pip" ]; then
-              echo "Creating virtual environment..."
-              rm -rf .venv
-              python3 -m venv .venv
-            fi
-
-            # Установить зависимости через полный путь к pip в venv
-            .venv/bin/pip install --upgrade pip --quiet
-            .venv/bin/pip install -r requirements.txt --quiet
-
-            # Остановить старые процессы если есть
-            pkill -f "python.*run.py" || true
-            pkill -f "uvicorn" || true
-            sleep 2
-
-            # Запустить платформу в фоне (FastAPI + Bot)
-            nohup .venv/bin/python run.py > bot.log 2>&1 &
+            echo "Rebuilding Docker containers..."
+            docker compose down || true
+            docker compose up -d --build
 
             sleep 3
             echo "✅ Деплой завершён!"
-            echo "PID: $(pgrep -f 'python.*run.py' || echo 'NOT RUNNING')"
-            echo "Логи: tail -f /root/tgplaylistbot/bot.log"
+            echo "Логи: docker logs --tail 50 musicbot-platform"
           ENDSCRIPT
