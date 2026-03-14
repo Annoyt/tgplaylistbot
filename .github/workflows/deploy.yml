@@ -44,6 +44,11 @@ jobs:
             git checkout feature/platform-musicbot
             git pull origin feature/platform-musicbot
 
+            echo "Cleaning up old python processes to free port 8000..."
+            pkill -f "python.*run.py" || true
+            pkill -f "uvicorn" || true
+            sleep 2
+
             echo "Rebuilding Docker containers..."
             docker compose down || true
             docker compose up -d --build
