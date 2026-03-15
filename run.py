@@ -16,11 +16,23 @@ from bot.handlers.recognize import router as recognize_router
 from bot.handlers.callbacks import router as callbacks_router
 from bot.handlers.forum import router as forum_router
 from bot.handlers.settings import router as settings_router
+from bot.handlers.admin import router as admin_router
 from bot.handlers.onboarding import router as onboarding_router
+
+import os
+from pathlib import Path
+
+log_dir = Path("data")
+log_dir.mkdir(exist_ok=True)
+log_file = log_dir / "bot.log"
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(log_file, encoding="utf-8")
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -50,6 +62,7 @@ async def run_bot() -> None:
     dp.include_router(start_router)
     dp.include_router(onboarding_router)
     dp.include_router(settings_router)
+    dp.include_router(admin_router)
     dp.include_router(recognize_router)
     dp.include_router(callbacks_router)
     dp.include_router(forum_router)
