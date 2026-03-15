@@ -25,6 +25,7 @@ async def cb_page(callback: CallbackQuery) -> None:
     lossless = bool(int(parts[3])) if len(parts) > 3 else False
 
     user_id = callback.from_user.id
+    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
     if not tracks:
         await callback.answer("Результаты устарели, выполни поиск снова.")
@@ -52,6 +53,7 @@ async def cb_filter(callback: CallbackQuery) -> None:
     page = int(parts[3]) if len(parts) > 3 else 1
 
     user_id = callback.from_user.id
+    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
     if not tracks:
         await callback.answer("Результаты устарели.")
@@ -85,6 +87,7 @@ async def cb_download(callback: CallbackQuery) -> None:
     quality = parts[2]
 
     user_id = callback.from_user.id
+    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
 
     if track_idx < 0 or track_idx >= len(tracks):
@@ -128,6 +131,7 @@ async def cb_download(callback: CallbackQuery) -> None:
 async def cb_back(callback: CallbackQuery) -> None:
     """Back to search results."""
     user_id = callback.from_user.id
+    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
     if tracks:
         text = _format_results(tracks, 1, 10, len(tracks))
@@ -139,9 +143,23 @@ async def cb_back(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("playlist:"))
 async def cb_playlist(callback: CallbackQuery) -> None:
     """Handle playlist emoji buttons — route track to forum topic."""
-    emoji = callback.data.split(":", 1)[1]
+    parts = callback.data.split(":")
+    emoji = parts[1]
+    track_idx = int(parts[2]) if len(parts) > 2 else 0
 
     if emoji == "new":
+        # We need state to save track_idx
+        from aiogram.fsm.context import FSMContext
+
+        # We will dispatch to FSM by modifying the handler signature slightly,
+        # but aiogram automatically injects state if it's in the signature.
+        # Since we can't change signature without breaking aiogram if we don't import FSMContext,
+        # let's just save it into a generic DB table or cache for now to keep it simple and robust.
+
+        # Simpler approach: save it in a small memory dict or DB
+        from bot.handlers.forum import _new_playlist_cache
+        _new_playlist_cache[callback.from_user.id] = track_idx
+
         await callback.message.answer("📁 Отправь мне эмодзи для нового плейлиста:")
         await callback.answer()
         return
@@ -152,9 +170,33 @@ async def cb_playlist(callback: CallbackQuery) -> None:
         await callback.answer("📂 Плейлисты работают в группах с топиками. Добавь бота в группу-форум!", show_alert=True)
         return
 
-    # Find topic with matching emoji
-    # This will be handled by forum.py handler
     await callback.answer(f"Отправляю в топик {emoji}...")
     # Delegate to forum handler logic
     from bot.handlers.forum import send_to_topic
-    await send_to_topic(callback, emoji)
+    await send_to_topic(callback, emoji, track_idx)
+
+@router.callback_query(F.data.startswith("select_track:"))
+async def cb_select_track(callback: CallbackQuery) -> None:
+    """Handle track selection from search results."""
+    parts = callback.data.split(":")
+    track_idx = int(parts[1])
+
+    user_id = callback.from_user.id
+    from bot.handlers.search import get_cached_tracks
+    tracks = get_cached_tracks(user_id)
+
+    if track_idx < 0 or track_idx >= len(tracks):
+        await callback.answer("Трек не найден.", show_alert=True)
+        return
+
+    track = tracks[track_idx]
+
+    # Show track details and options
+    text = f"🎵 Выбран трек:\n<b>{track.artist} – {track.title}</b>\n\nВ какой топик отправить?"
+
+    from bot.keyboards.inline import track_detail_kb
+    is_private = callback.message.chat.type == "private"
+    if is_private:
+        text = f"🎵 Выбран трек:\n<b>{track.artist} – {track.title}</b>"
+    await callback.message.edit_text(text, reply_markup=track_detail_kb(track_idx, is_private=is_private), parse_mode="HTML")
+    await callback.answer()

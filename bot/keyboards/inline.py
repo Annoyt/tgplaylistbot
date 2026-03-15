@@ -6,6 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.db.models import TrackInfo
 
 
+
 def search_results_kb(
     tracks: list[TrackInfo],
     page: int,
@@ -17,6 +18,24 @@ def search_results_kb(
     """Build keyboard for search results: pagination + filters + playlist emojis."""
     total_pages = max(1, (total + per_page - 1) // per_page)
     buttons: list[list[InlineKeyboardButton]] = []
+
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+
+    # Render track select buttons in rows of 5
+    track_row1 = []
+    track_row2 = []
+
+    for i in range(start, end):
+        display_idx = i - start + 1
+        btn = InlineKeyboardButton(text=f"[{display_idx}] Выбрать", callback_data=f"select_track:{i}")
+        if len(track_row1) < 5:
+            track_row1.append(btn)
+        else:
+            track_row2.append(btn)
+
+    if track_row1: buttons.append(track_row1)
+    if track_row2: buttons.append(track_row2)
 
     # Row 1-2: Pagination
     nav_row1: list[InlineKeyboardButton] = []
@@ -52,27 +71,29 @@ def search_results_kb(
         InlineKeyboardButton(text="Title", callback_data=f"filter:title:asc:{page}"),
     ])
 
-    # Row 4: Playlist emojis
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def track_detail_kb(track_index: int, is_private: bool = False) -> InlineKeyboardMarkup:
+    """Keyboard for a specific track: emojis for routing and direct downloads."""
+    buttons = []
+
+    if not is_private:
+        buttons.append([
+            InlineKeyboardButton(text="❤️", callback_data=f"playlist:❤️:{track_index}"),
+            InlineKeyboardButton(text="🔥", callback_data=f"playlist:🔥:{track_index}"),
+            InlineKeyboardButton(text="😢", callback_data=f"playlist:😢:{track_index}"),
+            InlineKeyboardButton(text="🎉", callback_data=f"playlist:🎉:{track_index}"),
+            InlineKeyboardButton(text="📁+", callback_data=f"playlist:new:{track_index}"),
+        ])
+
     buttons.append([
-        InlineKeyboardButton(text="❤️", callback_data="playlist:❤️"),
-        InlineKeyboardButton(text="🔥", callback_data="playlist:🔥"),
-        InlineKeyboardButton(text="😢", callback_data="playlist:😢"),
-        InlineKeyboardButton(text="🎉", callback_data="playlist:🎉"),
-        InlineKeyboardButton(text="📁+", callback_data="playlist:new"),
+        InlineKeyboardButton(text="⬇️ Скачать MP3", callback_data=f"dl:{track_index}:mp3_320"),
+        InlineKeyboardButton(text="⬇️ Скачать FLAC", callback_data=f"dl:{track_index}:flac"),
     ])
+    buttons.append([InlineKeyboardButton(text="← Назад к списку", callback_data="back_to_list")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
-def track_detail_kb(track_index: int) -> InlineKeyboardMarkup:
-    """Keyboard for a specific track: download buttons."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="⬇️ MP3 320", callback_data=f"dl:{track_index}:mp3_320"),
-            InlineKeyboardButton(text="⬇️ FLAC", callback_data=f"dl:{track_index}:flac"),
-        ],
-        [InlineKeyboardButton(text="← Назад к списку", callback_data="back_to_list")],
-    ])
 
 
 def settings_kb(quality: str, priority: str) -> InlineKeyboardMarkup:
@@ -92,11 +113,11 @@ def settings_kb(quality: str, priority: str) -> InlineKeyboardMarkup:
     ])
 
 
-def confirm_topic_kb(emoji: str) -> InlineKeyboardMarkup:
+def confirm_topic_kb(emoji: str, track_idx: int = 0) -> InlineKeyboardMarkup:
     """Confirm creating a new forum topic."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Да", callback_data=f"topic:create:{emoji}"),
+            InlineKeyboardButton(text="✅ Да", callback_data=f"topic:create:{emoji}:{track_idx}"),
             InlineKeyboardButton(text="❌ Нет", callback_data="topic:cancel"),
         ],
     ])

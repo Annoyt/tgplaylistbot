@@ -35,6 +35,7 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS users (
                 id            INTEGER PRIMARY KEY,
                 username      TEXT,
+                nickname      TEXT,
                 is_admin      INTEGER DEFAULT 0,
                 created_at    TEXT    DEFAULT (datetime('now'))
             );
@@ -71,6 +72,34 @@ async def init_db() -> None:
                 platform_priority   TEXT    DEFAULT 'youtube,vk,spotify',
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
+
+            CREATE TABLE IF NOT EXISTS search_sessions (
+                session_id      TEXT PRIMARY KEY,
+                user_id         INTEGER NOT NULL,
+                chat_id         INTEGER NOT NULL,
+                general_msg_ids TEXT NOT NULL,
+                query           TEXT NOT NULL,
+                state_data      TEXT,
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS topic_messages (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id         INTEGER NOT NULL,
+                topic_id        INTEGER NOT NULL,
+                message_id      INTEGER NOT NULL,
+                session_id      TEXT,
+                created_at      TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY (session_id) REFERENCES search_sessions(session_id)
+            );
             """
         )
+
         await db.commit()
+
+        # Migrations
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN nickname TEXT")
+            await db.commit()
+        except Exception:
+            pass # Column likely exists

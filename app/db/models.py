@@ -77,3 +77,10 @@ class RecognizedTrack:
     album: str = ""
     duration: int = 0
     cover_url: str = ""
+
+@dataclass
+class User:
+    id: int
+    username: str
+    nickname: Optional[str] = None
+    is_admin: int = 0

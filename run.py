@@ -16,6 +16,7 @@ from bot.handlers.recognize import router as recognize_router
 from bot.handlers.callbacks import router as callbacks_router
 from bot.handlers.forum import router as forum_router
 from bot.handlers.settings import router as settings_router
+from bot.handlers.onboarding import router as onboarding_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +48,7 @@ async def run_bot() -> None:
 
     # Register routers (order matters: specific first)
     dp.include_router(start_router)
+    dp.include_router(onboarding_router)
     dp.include_router(settings_router)
     dp.include_router(recognize_router)
     dp.include_router(callbacks_router)

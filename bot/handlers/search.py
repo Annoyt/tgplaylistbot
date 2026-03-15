@@ -41,11 +41,26 @@ def _format_results(tracks: list[TrackInfo], page: int, per_page: int, total: in
 @router.message(F.text & ~F.text.startswith("/") & ~F.text.startswith("http"))
 async def text_search(message: Message) -> None:
     """Handle text search queries."""
+
+
     query = message.text.strip()
     if not query or len(query) < 2:
         return
 
-    status_msg = await message.answer("🔍 Ищу на всех платформах...")
+    # Cross-Topic Routing: If requested in a specific topic, move it to General
+    if getattr(message.chat, 'is_forum', False) and getattr(message, 'message_thread_id', None) is not None:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+    # Always send status to the General topic or DM
+    status_msg = await message.bot.send_message(
+        chat_id=message.chat.id,
+        text=f"🔍 Ищу на всех платформах: <b>{query}</b>...",
+        message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None),
+        parse_mode="HTML"
+    )
 
     try:
         # Parallel search
