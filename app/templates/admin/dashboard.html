@@ -19,6 +19,46 @@
         </a>
     </div>
 
+    <div class="settings-form glass" style="margin-top: 2rem;">
+        <h2 class="form-title">📊 Нагрузка на сервер</h2>
+        <div class="metrics-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; text-align: center;">
+            <div class="metric-card">
+                <h4>Процессор (CPU)</h4>
+                <div style="font-size: 2rem; font-weight: bold; color: var(--accent);"><span id="cpu-val">--</span>%</div>
+            </div>
+            <div class="metric-card">
+                <h4>Оперативная память</h4>
+                <div style="font-size: 2rem; font-weight: bold; color: var(--accent);"><span id="mem-val">--</span>%</div>
+                <div style="font-size: 0.9rem; opacity: 0.8;" id="mem-text">-- / -- GB</div>
+            </div>
+            <div class="metric-card">
+                <h4>Диск (Память)</h4>
+                <div style="font-size: 2rem; font-weight: bold; color: var(--accent);"><span id="disk-val">--</span>%</div>
+                <div style="font-size: 0.9rem; opacity: 0.8;" id="disk-text">-- / -- GB</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function fetchMetrics() {
+            try {
+                const res = await fetch("/admin/metrics");
+                const data = await res.json();
+                if(data.ok) {
+                    document.getElementById("cpu-val").innerText = data.cpu;
+                    document.getElementById("mem-val").innerText = data.memory.percent;
+                    document.getElementById("mem-text").innerText = data.memory.used + " / " + data.memory.total + " GB";
+                    document.getElementById("disk-val").innerText = data.disk.percent;
+                    document.getElementById("disk-text").innerText = data.disk.used + " / " + data.disk.total + " GB";
+                }
+            } catch (e) {
+                console.error("Failed to fetch metrics", e);
+            }
+        }
+        fetchMetrics();
+        setInterval(fetchMetrics, 5000);
+    </script>
+
     <form method="post" action="/admin/password" class="settings-form glass" style="margin-top: 2rem;">
         <h2 class="form-title">🔑 Смена пароля</h2>
         {% if request.query_params.get("pwd_saved") %}
