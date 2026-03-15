@@ -76,6 +76,14 @@ async def main() -> None:
     """Run web + bot concurrently."""
     logger.info("🚀 Starting Platform...")
 
+    # Initialize Database
+    try:
+        from app.db.database import init_db
+        await init_db()
+        logger.info("✅ Database initialized")
+    except Exception as e:
+        logger.error(f"❌ Database init failed: {e}")
+
     await asyncio.gather(
         run_web(),
         run_bot(),
