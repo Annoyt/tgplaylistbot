@@ -53,6 +53,9 @@ jobs:
             docker compose down || true
             docker compose up -d --build
 
+            echo "Cleaning up old docker resources..."
+            docker system prune -af
+
             sleep 3
             echo "✅ Деплой завершён!"
             echo "Логи: docker logs --tail 50 musicbot-platform"
