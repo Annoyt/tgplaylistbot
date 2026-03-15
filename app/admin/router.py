@@ -139,28 +139,3 @@ async def verify_weather_api(request: Request, user: dict = Depends(get_current_
                     return {"ok": False, "error": data.get("message", "Unknown error")}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
-@router.get("/metrics")
-async def get_server_metrics(user: dict = Depends(get_current_user)):
-    try:
-        import psutil
-        cpu = psutil.cpu_percent(interval=0.5)
-        mem = psutil.virtual_memory()
-        disk = psutil.disk_usage("/")
-
-        return {
-            "ok": True,
-            "cpu": cpu,
-            "memory": {
-                "total": round(mem.total / (1024**3), 2),
-                "used": round(mem.used / (1024**3), 2),
-                "percent": mem.percent
-            },
-            "disk": {
-                "total": round(disk.total / (1024**3), 2),
-                "used": round(disk.used / (1024**3), 2),
-                "percent": disk.percent
-            }
-        }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
