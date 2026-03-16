@@ -68,6 +68,9 @@ async def run_bot() -> None:
     dp.include_router(forum_router)
     dp.include_router(search_router)  # Last: catches plain text
 
+    from bot.tasks import cleanup_loop
+    asyncio.create_task(cleanup_loop(bot))
+
     logger.info("🤖 Bot starting...")
     await dp.start_polling(bot)
 

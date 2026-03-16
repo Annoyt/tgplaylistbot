@@ -14,25 +14,51 @@ from services import vk_music as vk_service
 logger = logging.getLogger(__name__)
 
 
+
+import asyncio
+import time
+from bot.handlers.admin import get_global_settings
+
+# Global lock and timestamp to enforce download delay
+_download_lock = asyncio.Lock()
+_last_download_time = 0.0
+
 async def download_track(
     track: TrackInfo,
     quality: str = "mp3_320",
 ) -> str | None:
-    """Download a track from its source. Returns file path or None."""
+    """Download a track from its source. Returns file path or None. Enforces global delay."""
+    global _last_download_time
+
+    # Enforce delay but don't hold lock during download
+    async with _download_lock:
+        g_settings = await get_global_settings()
+        delay = g_settings.download_delay_sec
+        now = time.time()
+        elapsed = now - _last_download_time
+        if elapsed < delay:
+            wait_time = delay - elapsed
+            logger.info(f"Enforcing download delay, sleeping for {wait_time:.1f}s")
+            await asyncio.sleep(wait_time)
+
+        _last_download_time = time.time()
+
+    # Lock released, now download
     if track.source == "youtube":
         return await yt_service.download(track, quality)
     elif track.source == "vk":
         return await vk_service.download(track, quality)
     elif track.source == "spotify":
-        # Spotify doesn't allow direct download → search on YouTube and download
         query = f"{track.artist} {track.title}"
         yt_results = await yt_service.search(query, count=1)
         if yt_results:
             return await yt_service.download(yt_results[0], quality)
         return None
     else:
-        logger.error("Unknown source: %s", track.source)
+        logger.warning(f"Unknown source: {track.source}")
         return None
+
+
 
 
 def cleanup_file(file_path: str) -> None:

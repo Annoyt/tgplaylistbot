@@ -110,13 +110,54 @@ async def cb_download(callback: CallbackQuery) -> None:
             cleanup_file(file_path)
             return
 
-        await callback.message.answer_audio(
+
+        caption_text = f"{track.source_icon} {track.artist} – {track.title}\n👤 #{callback.from_user.id}"
+        if callback.from_user.username:
+            caption_text += f" (@{callback.from_user.username})"
+
+        audio_msg = await callback.message.answer_audio(
             audio=FSInputFile(file_path),
             title=track.title,
             performer=track.artist,
             duration=track.duration,
-            caption=f"{track.source_icon} {track.artist} – {track.title}",
+            caption=caption_text,
+            message_thread_id=callback.message.message_thread_id
         )
+
+        # Save to pending_tracks
+        if callback.message.chat.type != "private":
+            from app.db.database import get_db
+            import json
+            from dataclasses import asdict
+            db = await get_db()
+            try:
+                # We need to save the search message ID to delete it later
+                # We will keep the search message so users can download other tracks
+                # Or we can link it. The PRD says "search message and original request are kept until vote passes".
+                # Find original msg id from session
+                orig_id = None
+                row = await db.execute("SELECT original_msg_id FROM search_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
+                res = await row.fetchone()
+                if res:
+                    orig_id = res["original_msg_id"]
+
+                # Add the column to pending_tracks if not exists
+                try:
+                    await db.execute("ALTER TABLE pending_tracks ADD COLUMN original_msg_id INTEGER")
+                    await db.commit()
+                except:
+                    pass
+
+                await db.execute(
+                    "INSERT INTO pending_tracks (chat_id, audio_msg_id, search_msg_id, user_id, track_json, original_msg_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (callback.message.chat.id, audio_msg.message_id, callback.message.message_id, user_id, json.dumps(asdict(track)), orig_id)
+                )
+                await db.commit()
+            except Exception as dbe:
+                logger.error(f"Failed to save pending track: {dbe}")
+            finally:
+                await db.close()
+
         await status.delete()
 
     except Exception as e:
