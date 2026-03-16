@@ -81,6 +81,32 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
         user_id = message.from_user.id
         _search_cache[user_id] = all_tracks
 
+        import uuid
+        import json
+        from dataclasses import asdict
+        from app.db.database import get_db
+        session_id = str(uuid.uuid4())
+
+        db = await get_db()
+        try:
+            tracks_json = json.dumps([asdict(t) for t in all_tracks])
+            orig_id = message.message_id if getattr(message, 'message_thread_id', None) is None else None
+
+            await db.execute(
+                "INSERT INTO search_sessions (session_id, user_id, chat_id, general_msg_ids, query, state_data, original_msg_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_id, user_id, message.chat.id, "[]", query, tracks_json, orig_id)
+            )
+            await db.commit()
+
+            # Record the status message so it gets deleted on route
+            msg_ids = json.dumps([status.message_id])
+            await db.execute("UPDATE search_sessions SET general_msg_ids = ? WHERE session_id = ?", (msg_ids, session_id))
+            await db.commit()
+        except Exception as db_e:
+            logger.error(f"Failed to save session: {db_e}")
+        finally:
+            await db.close()
+
         text = f"🎵 <b>{result.artist} – {result.title}</b>\n\n" + _format_results(all_tracks, 1, 10, len(all_tracks))
         kb = search_results_kb(all_tracks, 1, len(all_tracks))
         await status.edit_text(text, reply_markup=kb, parse_mode="HTML")

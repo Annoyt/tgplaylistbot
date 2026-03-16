@@ -253,49 +253,106 @@ async def _check_empty_topic(bot, chat_id: int, topic_id: int) -> None:
 
 @router.message_reaction()
 async def handle_reaction(event: MessageReactionUpdated) -> None:
-    """Track 👎 reactions. If all members downvoted, delete the message."""
-    if not event.new_reaction:
-        return
+    """Process reactions on tracks for voting."""
+    chat = event.chat
+    from app.db.database import get_db
+    from bot.handlers.admin import get_global_settings
 
-    has_thumbs_down = any(
-        getattr(r, 'emoji', '') == '👎' for r in event.new_reaction
-    )
-    if not has_thumbs_down:
-        return
-
+    db = await get_db()
     try:
-        chat = event.chat
-        member_count = await event.bot.get_chat_member_count(chat.id)
-        # -1 for the bot itself
-        threshold = max(1, member_count - 1)
+        # 1. Check if it's a pending track awaiting a vote
+        row = await db.execute("SELECT * FROM pending_tracks WHERE chat_id = ? AND audio_msg_id = ?", (chat.id, event.message_id))
+        pending_track = await row.fetchone()
 
-        # Check if the message is actually a track we sent
-        from app.db.database import get_db
-        db = await get_db()
-        topic_id = None
-        try:
-            row = await db.execute("SELECT topic_id FROM topic_messages WHERE chat_id = ? AND message_id = ?", (chat.id, event.message_id))
-            res = await row.fetchone()
-            if res:
-                topic_id = res["topic_id"]
+        if pending_track:
 
-                # We found the track in DB, now we check the threshold (using 2 downvotes for demo, but keeping simple for now)
-                await event.bot.delete_message(chat.id, event.message_id)
-                await db.execute("DELETE FROM topic_messages WHERE chat_id = ? AND message_id = ?", (chat.id, event.message_id))
+
+            # If user removed their reaction
+            voter_id = event.user.id if event.user else (event.actor_chat.id if hasattr(event, "actor_chat") and event.actor_chat else 0)
+            if not voter_id:
+                return
+
+            if not event.new_reaction:
+                await db.execute("DELETE FROM track_votes WHERE msg_id = ? AND user_id = ?", (event.message_id, voter_id))
+            else:
+                # User added or changed their reaction
+                emoji = getattr(event.new_reaction[0], 'emoji', getattr(event.new_reaction[0], 'custom_emoji_id', ''))
+                if emoji:
+                    await db.execute("INSERT OR REPLACE INTO track_votes (msg_id, user_id, emoji) VALUES (?, ?, ?)", (event.message_id, voter_id, emoji))
+            await db.commit()
+
+            # Check if threshold is met to schedule routing
+            s = await get_global_settings()
+            member_count = await event.bot.get_chat_member_count(chat.id)
+            threshold = max(1, int(member_count * (s.vote_threshold_pct / 100.0)))
+
+            row = await db.execute("SELECT emoji, COUNT(*) as c FROM track_votes WHERE msg_id = ? GROUP BY emoji ORDER BY c DESC LIMIT 1", (event.message_id,))
+            top_vote = await row.fetchone()
+
+            if top_vote and top_vote["c"] >= threshold:
+
+                # Update scheduled time (if it wasn't already scheduled)
+                import time
+                route_time = int(time.time()) + s.vote_interval_sec
+                try:
+                    await db.execute("UPDATE pending_tracks SET route_at = ?, route_emoji = ? WHERE id = ? AND (route_at = 0 OR route_at IS NULL)",
+                                     (route_time, top_vote["emoji"], pending_track["id"]))
+                    await db.commit()
+                except Exception:
+                    pass
+            else:
+                # If votes drop below threshold, cancel the routing
+                try:
+                    await db.execute("UPDATE pending_tracks SET route_at = 0 WHERE id = ?", (pending_track["id"],))
+                    await db.commit()
+                except Exception:
+                    pass
+            return
+
+        # 2. Check if it's an ALREADY ROUTED track in a topic being downvoted
+        row = await db.execute("SELECT topic_id FROM topic_messages WHERE chat_id = ? AND message_id = ?", (chat.id, event.message_id))
+        res = await row.fetchone()
+        if res:
+            voter_id = event.user.id if event.user else (event.actor_chat.id if hasattr(event, "actor_chat") and event.actor_chat else 0)
+            if not voter_id:
+                return
+
+            await db.execute("CREATE TABLE IF NOT EXISTS track_votes (msg_id INTEGER, user_id INTEGER, emoji TEXT, UNIQUE(msg_id, user_id))")
+            await db.commit()
+
+            has_thumbs_down = any(getattr(r, 'emoji', '') == '👎' for r in event.new_reaction) if event.new_reaction else False
+
+            if not has_thumbs_down:
+                # User removed downvote or changed it to something else
+                await db.execute("DELETE FROM track_votes WHERE msg_id = ? AND user_id = ? AND emoji = '👎'", (event.message_id, voter_id))
                 await db.commit()
             else:
-                # Not our tracked message, do nothing
-                return
-        finally:
-            await db.close()
+                # Add downvote
+                await db.execute("INSERT OR REPLACE INTO track_votes (msg_id, user_id, emoji) VALUES (?, ?, '👎')", (event.message_id, voter_id))
+                await db.commit()
 
-        # Trigger cleanup check
-        if topic_id is not None:
-            await _check_empty_topic(event.bot, chat.id, topic_id)
+            # Check threshold
+            s = await get_global_settings()
+            member_count = await event.bot.get_chat_member_count(chat.id)
+            threshold = max(1, int(member_count * (s.vote_threshold_pct / 100.0)))
 
+            row = await db.execute("SELECT COUNT(*) as c FROM track_votes WHERE msg_id = ? AND emoji = '👎'", (event.message_id,))
+            downvotes = await row.fetchone()
+
+            if downvotes and downvotes["c"] >= threshold:
+                try:
+                    await event.bot.delete_message(chat.id, event.message_id)
+                except Exception:
+                    pass
+                await db.execute("DELETE FROM topic_messages WHERE chat_id = ? AND message_id = ?", (chat.id, event.message_id))
+                await db.execute("DELETE FROM track_votes WHERE msg_id = ?", (event.message_id,))
+                await db.commit()
+
+                await _check_empty_topic(event.bot, chat.id, res["topic_id"])
     except Exception as e:
         logger.warning("Reaction handling error: %s", e)
-
+    finally:
+        await db.close()
 
 @router.callback_query(F.data.startswith("undo:"))
 async def cb_undo(callback: CallbackQuery) -> None:

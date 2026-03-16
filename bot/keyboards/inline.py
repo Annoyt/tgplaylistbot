@@ -74,17 +74,8 @@ def search_results_kb(
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def track_detail_kb(track_index: int, is_private: bool = False) -> InlineKeyboardMarkup:
-    """Keyboard for a specific track: emojis for routing and direct downloads."""
+    """Keyboard for a specific track: only downloads."""
     buttons = []
-
-    if not is_private:
-        buttons.append([
-            InlineKeyboardButton(text="❤️", callback_data=f"playlist:❤️:{track_index}"),
-            InlineKeyboardButton(text="🔥", callback_data=f"playlist:🔥:{track_index}"),
-            InlineKeyboardButton(text="😢", callback_data=f"playlist:😢:{track_index}"),
-            InlineKeyboardButton(text="🎉", callback_data=f"playlist:🎉:{track_index}"),
-            InlineKeyboardButton(text="📁+", callback_data=f"playlist:new:{track_index}"),
-        ])
 
     buttons.append([
         InlineKeyboardButton(text="⬇️ Скачать MP3", callback_data=f"dl:{track_index}:mp3_320"),

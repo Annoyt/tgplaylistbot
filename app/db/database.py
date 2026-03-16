@@ -80,9 +80,28 @@ async def init_db() -> None:
                 general_msg_ids TEXT NOT NULL,
                 query           TEXT NOT NULL,
                 state_data      TEXT,
+                original_msg_id INTEGER,
                 created_at      TEXT DEFAULT (datetime('now'))
             );
 
+
+            CREATE TABLE IF NOT EXISTS pending_tracks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id         INTEGER NOT NULL,
+                audio_msg_id    INTEGER NOT NULL,
+                search_msg_id   INTEGER,
+                user_id         INTEGER NOT NULL,
+                track_json      TEXT NOT NULL,
+                route_at        INTEGER DEFAULT 0,
+                route_emoji     TEXT DEFAULT '',
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
+                        CREATE TABLE IF NOT EXISTS track_votes (
+                msg_id INTEGER,
+                user_id INTEGER,
+                emoji TEXT,
+                UNIQUE(msg_id, user_id)
+            );
             CREATE TABLE IF NOT EXISTS topic_messages (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id         INTEGER NOT NULL,
@@ -103,3 +122,16 @@ async def init_db() -> None:
             await db.commit()
         except Exception:
             pass # Column likely exists
+
+        try:
+            await db.execute("ALTER TABLE search_sessions ADD COLUMN original_msg_id INTEGER")
+            await db.commit()
+        except Exception:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE pending_tracks ADD COLUMN route_at INTEGER DEFAULT 0")
+            await db.execute("ALTER TABLE pending_tracks ADD COLUMN route_emoji TEXT DEFAULT ''")
+            await db.commit()
+        except Exception:
+            pass
