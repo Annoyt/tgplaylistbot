@@ -42,7 +42,7 @@ jobs:
             cd "$PROJECT_DIR"
             git fetch origin
             git checkout feature/platform-musicbot
-            git pull origin feature/platform-musicbot
+            git reset --hard origin/feature/platform-musicbot
 
             echo "Cleaning up old python processes to free port 8000..."
             pkill -f "python.*run.py" || true
@@ -52,9 +52,6 @@ jobs:
             echo "Rebuilding Docker containers..."
             docker compose down || true
             docker compose up -d --build
-
-            echo "Cleaning up old docker resources..."
-            docker system prune -af
 
             sleep 3
             echo "✅ Деплой завершён!"

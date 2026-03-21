@@ -74,8 +74,9 @@ async def download(
     dl_dir = download_dir or settings.download_path
     dl_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in f"{track.artist} - {track.title}")
-    file_path = dl_dir / f"{safe_name}.mp3"
+    import uuid
+    uid = uuid.uuid4().hex
+    file_path = dl_dir / f"{uid}.mp3"
 
     try:
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:

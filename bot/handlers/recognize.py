@@ -33,7 +33,20 @@ async def _download_tg_file(message: Message, file_id: str) -> str:
 
 async def _recognize_and_search(message: Message, audio_path: str) -> None:
     """Recognize track from audio file, then search for full version."""
-    status = await message.answer("🎧 Распознаю трек...")
+
+
+    # Cross-Topic Routing
+    if getattr(message.chat, 'is_forum', False) and getattr(message, 'message_thread_id', None) is not None:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+    status = await message.bot.send_message(
+        chat_id=message.chat.id,
+        text="🎧 Распознаю трек...",
+        message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
+    )
 
     try:
         result = await recognizer.recognize(audio_path, settings.acoustid_api_key)
@@ -68,6 +81,32 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
         user_id = message.from_user.id
         _search_cache[user_id] = all_tracks
 
+        import uuid
+        import json
+        from dataclasses import asdict
+        from app.db.database import get_db
+        session_id = str(uuid.uuid4())
+
+        db = await get_db()
+        try:
+            tracks_json = json.dumps([asdict(t) for t in all_tracks])
+            orig_id = message.message_id if getattr(message, 'message_thread_id', None) is None else None
+
+            await db.execute(
+                "INSERT INTO search_sessions (session_id, user_id, chat_id, general_msg_ids, query, state_data, original_msg_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_id, user_id, message.chat.id, "[]", query, tracks_json, orig_id)
+            )
+            await db.commit()
+
+            # Record the status message so it gets deleted on route
+            msg_ids = json.dumps([status.message_id])
+            await db.execute("UPDATE search_sessions SET general_msg_ids = ? WHERE session_id = ?", (msg_ids, session_id))
+            await db.commit()
+        except Exception as db_e:
+            logger.error(f"Failed to save session: {db_e}")
+        finally:
+            await db.close()
+
         text = f"🎵 <b>{result.artist} – {result.title}</b>\n\n" + _format_results(all_tracks, 1, 10, len(all_tracks))
         kb = search_results_kb(all_tracks, 1, len(all_tracks))
         await status.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -80,6 +119,8 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
 # ── Voice message ──────────────────────────────────
 @router.message(F.voice)
 async def handle_voice(message: Message) -> None:
+
+
     path = await _download_tg_file(message, message.voice.file_id)
     await _recognize_and_search(message, path)
 
@@ -87,6 +128,8 @@ async def handle_voice(message: Message) -> None:
 # ── Video note (circle) ────────────────────────────
 @router.message(F.video_note)
 async def handle_video_note(message: Message) -> None:
+
+
     path = await _download_tg_file(message, message.video_note.file_id)
     await _recognize_and_search(message, path)
 
@@ -94,6 +137,8 @@ async def handle_video_note(message: Message) -> None:
 # ── Video file (forwarded clips) ───────────────────
 @router.message(F.video)
 async def handle_video(message: Message) -> None:
+
+
     if message.video.file_size and message.video.file_size > 20 * 1024 * 1024:
         await message.answer("⚠️ Видео слишком большое (>20MB). Отправь покороче.")
         return
@@ -104,6 +149,8 @@ async def handle_video(message: Message) -> None:
 # ── Audio file ─────────────────────────────────────
 @router.message(F.audio)
 async def handle_audio(message: Message) -> None:
+
+
     path = await _download_tg_file(message, message.audio.file_id)
     await _recognize_and_search(message, path)
 
@@ -111,8 +158,21 @@ async def handle_audio(message: Message) -> None:
 # ── URL links (Instagram, TikTok, etc.) ────────────
 @router.message(F.text.regexp(URL_REGEX))
 async def handle_link(message: Message) -> None:
+
     url = URL_REGEX.search(message.text).group(0)
-    status = await message.answer(f"🔗 Скачиваю видео с {url[:40]}...")
+
+    # Cross-Topic Routing
+    if getattr(message.chat, 'is_forum', False) and getattr(message, 'message_thread_id', None) is not None:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+    status = await message.bot.send_message(
+        chat_id=message.chat.id,
+        text=f"🔗 Скачиваю видео с {url[:40]}...",
+        message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
+    )
 
     try:
         audio_path = await yt_svc.download_from_url(url)

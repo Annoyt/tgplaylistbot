@@ -25,6 +25,7 @@ async def cb_page(callback: CallbackQuery) -> None:
     lossless = bool(int(parts[3])) if len(parts) > 3 else False
 
     user_id = callback.from_user.id
+    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
     if not tracks:
         await callback.answer("Результаты устарели, выполни поиск снова.")
@@ -52,6 +53,7 @@ async def cb_filter(callback: CallbackQuery) -> None:
     page = int(parts[3]) if len(parts) > 3 else 1
 
     user_id = callback.from_user.id
+    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
     if not tracks:
         await callback.answer("Результаты устарели.")
@@ -85,6 +87,7 @@ async def cb_download(callback: CallbackQuery) -> None:
     quality = parts[2]
 
     user_id = callback.from_user.id
+    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
 
     if track_idx < 0 or track_idx >= len(tracks):
@@ -107,13 +110,54 @@ async def cb_download(callback: CallbackQuery) -> None:
             cleanup_file(file_path)
             return
 
-        await callback.message.answer_audio(
+
+        caption_text = f"{track.source_icon} {track.artist} – {track.title}\n👤 #{callback.from_user.id}"
+        if callback.from_user.username:
+            caption_text += f" (@{callback.from_user.username})"
+
+        audio_msg = await callback.message.answer_audio(
             audio=FSInputFile(file_path),
             title=track.title,
             performer=track.artist,
             duration=track.duration,
-            caption=f"{track.source_icon} {track.artist} – {track.title}",
+            caption=caption_text,
+            message_thread_id=callback.message.message_thread_id
         )
+
+        # Save to pending_tracks
+        if callback.message.chat.type != "private":
+            from app.db.database import get_db
+            import json
+            from dataclasses import asdict
+            db = await get_db()
+            try:
+                # We need to save the search message ID to delete it later
+                # We will keep the search message so users can download other tracks
+                # Or we can link it. The PRD says "search message and original request are kept until vote passes".
+                # Find original msg id from session
+                orig_id = None
+                row = await db.execute("SELECT original_msg_id FROM search_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
+                res = await row.fetchone()
+                if res:
+                    orig_id = res["original_msg_id"]
+
+                # Add the column to pending_tracks if not exists
+                try:
+                    await db.execute("ALTER TABLE pending_tracks ADD COLUMN original_msg_id INTEGER")
+                    await db.commit()
+                except:
+                    pass
+
+                await db.execute(
+                    "INSERT INTO pending_tracks (chat_id, audio_msg_id, search_msg_id, user_id, track_json, original_msg_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (callback.message.chat.id, audio_msg.message_id, callback.message.message_id, user_id, json.dumps(asdict(track)), orig_id)
+                )
+                await db.commit()
+            except Exception as dbe:
+                logger.error(f"Failed to save pending track: {dbe}")
+            finally:
+                await db.close()
+
         await status.delete()
 
     except Exception as e:
@@ -128,6 +172,7 @@ async def cb_download(callback: CallbackQuery) -> None:
 async def cb_back(callback: CallbackQuery) -> None:
     """Back to search results."""
     user_id = callback.from_user.id
+    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
     if tracks:
         text = _format_results(tracks, 1, 10, len(tracks))
@@ -139,9 +184,23 @@ async def cb_back(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("playlist:"))
 async def cb_playlist(callback: CallbackQuery) -> None:
     """Handle playlist emoji buttons — route track to forum topic."""
-    emoji = callback.data.split(":", 1)[1]
+    parts = callback.data.split(":")
+    emoji = parts[1]
+    track_idx = int(parts[2]) if len(parts) > 2 else 0
 
     if emoji == "new":
+        # We need state to save track_idx
+        from aiogram.fsm.context import FSMContext
+
+        # We will dispatch to FSM by modifying the handler signature slightly,
+        # but aiogram automatically injects state if it's in the signature.
+        # Since we can't change signature without breaking aiogram if we don't import FSMContext,
+        # let's just save it into a generic DB table or cache for now to keep it simple and robust.
+
+        # Simpler approach: save it in a small memory dict or DB
+        from bot.handlers.forum import _new_playlist_cache
+        _new_playlist_cache[callback.from_user.id] = track_idx
+
         await callback.message.answer("📁 Отправь мне эмодзи для нового плейлиста:")
         await callback.answer()
         return
@@ -152,9 +211,31 @@ async def cb_playlist(callback: CallbackQuery) -> None:
         await callback.answer("📂 Плейлисты работают в группах с топиками. Добавь бота в группу-форум!", show_alert=True)
         return
 
-    # Find topic with matching emoji
-    # This will be handled by forum.py handler
     await callback.answer(f"Отправляю в топик {emoji}...")
     # Delegate to forum handler logic
     from bot.handlers.forum import send_to_topic
-    await send_to_topic(callback, emoji)
+    await send_to_topic(callback, emoji, track_idx)
+
+@router.callback_query(F.data.startswith("select_track:"))
+async def cb_select_track(callback: CallbackQuery) -> None:
+    """Handle track selection from search results."""
+    parts = callback.data.split(":")
+    track_idx = int(parts[1])
+
+    user_id = callback.from_user.id
+    from bot.handlers.search import get_cached_tracks
+    tracks = get_cached_tracks(user_id)
+
+    if track_idx < 0 or track_idx >= len(tracks):
+        await callback.answer("Трек не найден.", show_alert=True)
+        return
+
+    track = tracks[track_idx]
+
+    # Show track details and options
+    text = f"🎵 Выбран трек:\n<b>{track.artist} – {track.title}</b>"
+
+    from bot.keyboards.inline import track_detail_kb
+    is_private = callback.message.chat.type == "private"
+    await callback.message.edit_text(text, reply_markup=track_detail_kb(track_idx, is_private=is_private), parse_mode="HTML")
+    await callback.answer()

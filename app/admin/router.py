@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from bot.handlers.admin import get_global_settings, update_global_setting
 from fastapi.templating import Jinja2Templates
 
 from app.auth.dependencies import get_current_user
@@ -14,7 +15,26 @@ templates = Jinja2Templates(directory="app/templates")
 
 @router.get("/", response_class=HTMLResponse)
 async def admin_dashboard(request: Request, user: dict = Depends(get_current_user)):
-    return templates.TemplateResponse("admin/dashboard.html", {"request": request, "user": user})
+    g_settings = await get_global_settings()
+    return templates.TemplateResponse("admin/dashboard.html", {"request": request, "user": user, "settings": g_settings})
+
+@router.post("/settings")
+async def save_settings(request: Request, user: dict = Depends(get_current_user)):
+    form = await request.form()
+    vote_threshold_pct = form.get("vote_threshold_pct")
+    vote_interval_sec = form.get("vote_interval_sec")
+    download_delay_sec = form.get("download_delay_sec")
+    msg_ttl_days = form.get("msg_ttl_days")
+    forward_mode = form.get("forward_mode")
+
+    await update_global_setting("vote_threshold_pct", str(vote_threshold_pct))
+    await update_global_setting("vote_interval_sec", str(vote_interval_sec))
+    await update_global_setting("download_delay_sec", str(download_delay_sec))
+    await update_global_setting("msg_ttl_days", str(msg_ttl_days))
+    await update_global_setting("forward_mode", str(forward_mode))
+
+    return RedirectResponse(url="/admin", status_code=303)
+
 
 @router.post("/password")
 async def change_password(request: Request, user: dict = Depends(get_current_user)):
@@ -137,30 +157,5 @@ async def verify_weather_api(request: Request, user: dict = Depends(get_current_
                     return {"ok": True}
                 else:
                     return {"ok": False, "error": data.get("message", "Unknown error")}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-@router.get("/metrics")
-async def get_server_metrics(user: dict = Depends(get_current_user)):
-    try:
-        import psutil
-        cpu = psutil.cpu_percent(interval=0.5)
-        mem = psutil.virtual_memory()
-        disk = psutil.disk_usage("/")
-
-        return {
-            "ok": True,
-            "cpu": cpu,
-            "memory": {
-                "total": round(mem.total / (1024**3), 2),
-                "used": round(mem.used / (1024**3), 2),
-                "percent": mem.percent
-            },
-            "disk": {
-                "total": round(disk.total / (1024**3), 2),
-                "used": round(disk.used / (1024**3), 2),
-                "percent": disk.percent
-            }
-        }
     except Exception as e:
         return {"ok": False, "error": str(e)}

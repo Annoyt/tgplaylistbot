@@ -58,9 +58,22 @@ class TrackInfo:
     def bitrate_str(self) -> str:
         if self.is_lossless:
             return "FLAC"
-        if self.bitrate <= 0:
-            return "—"
-        return f"{self.bitrate}k"
+        if self.bitrate > 0:
+            return f"{self.bitrate}k"
+
+        # Estimate bitrate if missing (filesize in bytes, duration in sec)
+        # bitrate (kbps) = filesize_bytes * 8 / duration_sec / 1000
+        if self.filesize > 0 and self.duration > 0:
+            est_kbps = int(self.filesize * 8 / self.duration / 1000)
+            if est_kbps > 20: # Sanity check
+                return f"~{est_kbps}k"
+
+        # If all else fails, assume 320k or similar depending on platform.
+        # But YouTube is often 128k/160k, VK is 320k.
+        if self.source == "vk": return "~320k"
+        if self.source == "youtube": return "~128k"
+
+        return "—"
 
     @property
     def source_icon(self) -> str:
@@ -77,3 +90,19 @@ class RecognizedTrack:
     album: str = ""
     duration: int = 0
     cover_url: str = ""
+
+@dataclass
+class User:
+    id: int
+    username: str
+    nickname: Optional[str] = None
+    is_admin: int = 0
+
+
+@dataclass
+class GlobalSettings:
+    vote_threshold_pct: int = 25
+    vote_interval_sec: int = 60
+    download_delay_sec: int = 3
+    msg_ttl_days: int = 7
+    forward_mode: str = "resend" # 'resend' | 'forward'
