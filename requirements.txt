@@ -26,7 +26,7 @@ spotipy==2.24.0
 yt-dlp==2025.3.31
 
 # Audio Recognition
-shazamio==0.7.0
+shazamio==0.8.1
 pyacoustid==1.3.0
 
 # Audio Processing

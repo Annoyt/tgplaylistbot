@@ -122,7 +122,12 @@ async def handle_voice(message: Message) -> None:
 
 
     path = await _download_tg_file(message, message.voice.file_id)
-    await _recognize_and_search(message, path)
+    try:
+        await _recognize_and_search(message, path)
+    except Exception as e:
+        logger.error(f"Voice handling error: {e}")
+        if os.path.exists(path):
+            os.remove(path)
 
 
 # ── Video note (circle) ────────────────────────────
@@ -131,7 +136,12 @@ async def handle_video_note(message: Message) -> None:
 
 
     path = await _download_tg_file(message, message.video_note.file_id)
-    await _recognize_and_search(message, path)
+    try:
+        await _recognize_and_search(message, path)
+    except Exception as e:
+        logger.error(f"Video note handling error: {e}")
+        if os.path.exists(path):
+            os.remove(path)
 
 
 # ── Video file (forwarded clips) ───────────────────
@@ -143,7 +153,12 @@ async def handle_video(message: Message) -> None:
         await message.answer("⚠️ Видео слишком большое (>20MB). Отправь покороче.")
         return
     path = await _download_tg_file(message, message.video.file_id)
-    await _recognize_and_search(message, path)
+    try:
+        await _recognize_and_search(message, path)
+    except Exception as e:
+        logger.error(f"Video handling error: {e}")
+        if os.path.exists(path):
+            os.remove(path)
 
 
 # ── Audio file ─────────────────────────────────────
@@ -152,7 +167,12 @@ async def handle_audio(message: Message) -> None:
 
 
     path = await _download_tg_file(message, message.audio.file_id)
-    await _recognize_and_search(message, path)
+    try:
+        await _recognize_and_search(message, path)
+    except Exception as e:
+        logger.error(f"Audio handling error: {e}")
+        if os.path.exists(path):
+            os.remove(path)
 
 
 # ── URL links (Instagram, TikTok, etc.) ────────────
@@ -186,3 +206,5 @@ async def handle_link(message: Message) -> None:
     except Exception as e:
         logger.error("Link recognition failed: %s", e)
         await status.edit_text(f"❌ Ошибка: {e}")
+        if audio_path and os.path.exists(audio_path):
+            os.remove(audio_path)
