@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from pathlib import Path
 
 from app.db.models import TrackInfo
@@ -64,7 +65,8 @@ async def download(
     dl_dir.mkdir(parents=True, exist_ok=True)
 
     url = f"https://www.youtube.com/watch?v={track.source_id}"
-    output_template = str(dl_dir / "%(title)s.%(ext)s")
+    uid = uuid.uuid4().hex
+    output_template = str(dl_dir / f"{uid}.%(ext)s")
 
     if quality == "flac":
         cmd = [
@@ -100,10 +102,9 @@ async def download(
         return None
 
     ext = "flac" if quality == "flac" else "mp3"
-    for f in dl_dir.iterdir():
-        if f.suffix == f".{ext}" and f.stat().st_size > 0:
-            return str(f)
-
+    out_file = dl_dir / f"{uid}.{ext}"
+    if out_file.exists() and out_file.stat().st_size > 0:
+        return str(out_file)
     return None
 
 
@@ -112,7 +113,8 @@ async def download_from_url(url: str, download_dir: Path | None = None) -> str |
     dl_dir = download_dir or settings.download_path
     dl_dir.mkdir(parents=True, exist_ok=True)
 
-    output_template = str(dl_dir / "%(title)s.%(ext)s")
+    uid = uuid.uuid4().hex
+    output_template = str(dl_dir / f"{uid}.%(ext)s")
     cmd = [
         "yt-dlp",
         "-x",
@@ -133,7 +135,7 @@ async def download_from_url(url: str, download_dir: Path | None = None) -> str |
         logger.error("yt-dlp URL download failed: %s", stderr.decode())
         return None
 
-    for f in dl_dir.iterdir():
-        if f.suffix == ".mp3" and f.stat().st_size > 0:
-            return str(f)
+    out_file = dl_dir / f"{uid}.mp3"
+    if out_file.exists() and out_file.stat().st_size > 0:
+        return str(out_file)
     return None

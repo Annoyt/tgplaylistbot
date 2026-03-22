@@ -14,7 +14,9 @@ jobs:
 
     steps:
       - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.9.1
+        uses: webfactory/ssh-agent@v0.9.0
+        env:
+          ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
@@ -52,6 +54,9 @@ jobs:
             echo "Rebuilding Docker containers..."
             docker compose down || true
             docker compose up -d --build
+
+            echo "Cleaning up dangling images..."
+            docker system prune -af
 
             sleep 3
             echo "✅ Деплой завершён!"
