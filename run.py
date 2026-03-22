@@ -98,6 +98,8 @@ async def run_bot() -> None:
 
     await dp.start_polling(bot)
 
+    logger.info("🤖 Bot starting...")
+    await dp.start_polling(bot)
 
 
 async def main() -> None:

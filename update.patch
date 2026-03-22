@@ -1,0 +1,1559 @@
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 581b9be..918b398 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -42,7 +42,7 @@ jobs:
+             cd "$PROJECT_DIR"
+             git fetch origin
+             git checkout feature/platform-musicbot
+-            git pull origin feature/platform-musicbot
++            git reset --hard origin/feature/platform-musicbot
+
+             echo "Cleaning up old python processes to free port 8000..."
+             pkill -f "python.*run.py" || true
+diff --git a/PRD.md b/PRD.md
+new file mode 100644
+index 0000000..1aafcae
+--- /dev/null
++++ b/PRD.md
+@@ -0,0 +1,56 @@
++# Product Requirements Document (PRD)
++## tgplaylistbot (VKMusicBot + Weather Platform)
++
++### 1. Архитектура и Базовые принципы (Существующий функционал)
++- **Zero Server Storage**: Треки скачиваются во временную директорию (`/tmp/musicbot`), отправляются в Telegram и сразу же удаляются. Файлы не сохраняются на сервере.
++- **Технологический стек**:
++  - Web App: FastAPI (дашборд погоды, панель администратора, будущие страницы для прохождения капчи).
++  - Telegram Bot: aiogram 3.x.
++  - База данных: SQLite (`aiosqlite` без тяжелых ORM).
++- **Интеграции**: VK Music, Spotify, YouTube (поиск), OpenWeatherMap (погода), AcoustID (распознавание аудио).
++- **Ограничения**: Максимальный размер файла для скачивания — 49 МБ.
++- **Пользовательские настройки**: Качество звука, приоритет платформ при поиске, количество результатов на страницу (`/settings`).
++- **Распознавание музыки**: Интеграция с AcoustID для определения трека и исполнителя по аудиосообщениям.
++- **Удаление по реакциям**: Удаление трека из плейлиста, если большинство участников поставили дизлайк (👎).
++
++### 2. Пользователи и Персонализация (Новый функционал)
++- **Хранение данных**: Бот должен хранить данные о пользователях (как минимум ник).
++- **Онбординг**: При добавлении нового пользователя в канал или группу, бот должен спрашивать, как к нему обращаться.
++- **Обращение**: Бот должен обращаться к пользователю по сохраненному нику/имени.
++- **Общение в ЛС**: Бот должен уметь отвечать пользователю в личные сообщения, при условии, что этот пользователь состоит с ботом в общих чатах.
++
++### 3. Работа в Группах и Топиках (Новый функционал)
++- **Авто-конвертация**: При добавлении в обычную группу бот должен автоматически преобразовывать её в группу с топиками (форум).
++- **Единая точка входа ("Общий чат")**: Все принимаемые заявки (поиск музыки и т.д.) обрабатываются и выдают результат **исключительно в рамках топика "General" / "Общий чат"**.
++- **Обработка Капчи (VK)**:
++  - *Текстовая капча*: Бот присылает картинку капчи прямо в "Общий чат" и ждет, пока пользователь введет ответ текстом.
++  - *Нетекстовая капча (ReCaptcha/SmartCaptcha и т.д.)*: Бот генерирует уникальную ссылку и отправляет её пользователю. Ссылка уводит пользователя на веб-страницу (FastAPI) для прохождения капчи.
++
++### 4. Управление треками, Чистота и Жизненный цикл топиков (Новый функционал)
++- **Очистка спама ("Общий чат")**:
++  - Результаты поиска прилетают в "Общий чат".
++  - Пользователь нажимает определенный эмодзи под нужным треком, подтверждая выбор ("получил, что хотел").
++  - Сразу после нажатия трек перемещается в соответствующий топик (чат-комнату), привязанный к этому эмодзи.
++  - Все следы поиска (сообщения от бота с вариантами) **удаляются** из "Общего чата", не оставляя спама.
++- **Отмена действий (Undo)**:
++  - Нужна команда или кнопка возврата состояния (Undo), если пользователь случайно выбрал не тот эмодзи.
++  - При возврате состояния список найденных треков возвращается на прежнее место в "Общем чате", а трек убирается из целевого топика.
++- **Именование топиков**:
++  - Название нового топика состоит из: `[Эмодзи] + [Название раздела (если пользователь задал) ИЛИ Жанр первого добавленного туда трека (если название не задано)]`.
++- **Авто-удаление топиков**:
++  - Если в любом топике (кроме "Общего чата") не осталось ни одного сообщения/трека (например, все удалили через 👎 или перенесли), этот топик **должен автоматически удаляться/закрываться**. "Общий чат" удалять нельзя.
++
++### 5. Голосования, Очистка и Глобальные Настройки (Обновление)
++- **Глобальные настройки (Bot Settings)**: Должны настраиваться как через админ-панель сайта, так и через Telegram (`/settings` для админов).
++  - `vote_threshold_pct`: Процент голосов от участников чата для принятия решения (по умолчанию 25%).
++  - `vote_interval_sec`: Задержка перед обработкой реакции, чтобы избежать случайных нажатий (по умолчанию 60 сек).
++  - `download_delay_sec`: Глобальная задержка между скачиваниями треков во избежание спам-блокировок API (по умолчанию 3 сек).
++  - `msg_ttl_days`: Время жизни сообщений с результатами поиска до автоудаления, если никто не проголосовал (по умолчанию 7 дней).
++  - `forward_mode`: Способ переноса трека в топик (Форвард или Отправка заново с тегом). По умолчанию - переотправка с хештегом `#id_пользователя` для удобного сбора своих треков.
++- **Новый флоу выбора топика (Reactions)**:
++  - Кнопки с эмодзи под результатами поиска убираются. Остается только кнопка "Скачать".
++  - При нажатии "Скачать" бот отправляет аудиофайл в Общий чат. Сообщение с результатами поиска и исходный запрос (ссылка/текст) **остаются** в чате.
++  - Пользователи ставят **встроенные реакции Telegram** на сообщение с аудиофайлом.
++  - Если любая реакция (например, 🔥 или 👎) набирает нужный процент голосов (25%), бот ждет `vote_interval_sec` (чтобы убедиться, что реакцию не убрали).
++  - После этого трек переносится в соответствующий топик (или удаляется при 👎), а **все исходные сообщения** (результаты поиска, аудиофайл в общем чате, исходный запрос пользователя) удаляются.
++- **Отображение битрейта**: Исправлен баг, из-за которого битрейт треков отображался как "—" (прочерк).
+diff --git a/app/admin/router.py b/app/admin/router.py
+index e48ae9d..6f6c035 100644
+--- a/app/admin/router.py
++++ b/app/admin/router.py
+@@ -2,6 +2,7 @@
+
+ from fastapi import APIRouter, Depends, Request
+ from fastapi.responses import HTMLResponse, RedirectResponse
++from bot.handlers.admin import get_global_settings, update_global_setting
+ from fastapi.templating import Jinja2Templates
+
+ from app.auth.dependencies import get_current_user
+@@ -14,7 +15,26 @@ templates = Jinja2Templates(directory="app/templates")
+
+ @router.get("/", response_class=HTMLResponse)
+ async def admin_dashboard(request: Request, user: dict = Depends(get_current_user)):
+-    return templates.TemplateResponse("admin/dashboard.html", {"request": request, "user": user})
++    g_settings = await get_global_settings()
++    return templates.TemplateResponse("admin/dashboard.html", {"request": request, "user": user, "settings": g_settings})
++
++@router.post("/settings")
++async def save_settings(request: Request, user: dict = Depends(get_current_user)):
++    form = await request.form()
++    vote_threshold_pct = form.get("vote_threshold_pct")
++    vote_interval_sec = form.get("vote_interval_sec")
++    download_delay_sec = form.get("download_delay_sec")
++    msg_ttl_days = form.get("msg_ttl_days")
++    forward_mode = form.get("forward_mode")
++
++    await update_global_setting("vote_threshold_pct", str(vote_threshold_pct))
++    await update_global_setting("vote_interval_sec", str(vote_interval_sec))
++    await update_global_setting("download_delay_sec", str(download_delay_sec))
++    await update_global_setting("msg_ttl_days", str(msg_ttl_days))
++    await update_global_setting("forward_mode", str(forward_mode))
++
++    return RedirectResponse(url="/admin", status_code=303)
++
+
+ @router.post("/password")
+ async def change_password(request: Request, user: dict = Depends(get_current_user)):
+diff --git a/app/db/database.py b/app/db/database.py
+index 38163b0..c486c8a 100644
+--- a/app/db/database.py
++++ b/app/db/database.py
+@@ -35,6 +35,7 @@ async def init_db() -> None:
+             CREATE TABLE IF NOT EXISTS users (
+                 id            INTEGER PRIMARY KEY,
+                 username      TEXT,
++                nickname      TEXT,
+                 is_admin      INTEGER DEFAULT 0,
+                 created_at    TEXT    DEFAULT (datetime('now'))
+             );
+@@ -71,6 +72,66 @@ async def init_db() -> None:
+                 platform_priority   TEXT    DEFAULT 'youtube,vk,spotify',
+                 FOREIGN KEY (user_id) REFERENCES users(id)
+             );
++
++            CREATE TABLE IF NOT EXISTS search_sessions (
++                session_id      TEXT PRIMARY KEY,
++                user_id         INTEGER NOT NULL,
++                chat_id         INTEGER NOT NULL,
++                general_msg_ids TEXT NOT NULL,
++                query           TEXT NOT NULL,
++                state_data      TEXT,
++                original_msg_id INTEGER,
++                created_at      TEXT DEFAULT (datetime('now'))
++            );
++
++
++            CREATE TABLE IF NOT EXISTS pending_tracks (
++                id              INTEGER PRIMARY KEY AUTOINCREMENT,
++                chat_id         INTEGER NOT NULL,
++                audio_msg_id    INTEGER NOT NULL,
++                search_msg_id   INTEGER,
++                user_id         INTEGER NOT NULL,
++                track_json      TEXT NOT NULL,
++                route_at        INTEGER DEFAULT 0,
++                route_emoji     TEXT DEFAULT '',
++                created_at      TEXT DEFAULT (datetime('now'))
++            );
++                        CREATE TABLE IF NOT EXISTS track_votes (
++                msg_id INTEGER,
++                user_id INTEGER,
++                emoji TEXT,
++                UNIQUE(msg_id, user_id)
++            );
++            CREATE TABLE IF NOT EXISTS topic_messages (
++                id              INTEGER PRIMARY KEY AUTOINCREMENT,
++                chat_id         INTEGER NOT NULL,
++                topic_id        INTEGER NOT NULL,
++                message_id      INTEGER NOT NULL,
++                session_id      TEXT,
++                created_at      TEXT DEFAULT (datetime('now')),
++                FOREIGN KEY (session_id) REFERENCES search_sessions(session_id)
++            );
+             """
+         )
++
+         await db.commit()
++
++        # Migrations
++        try:
++            await db.execute("ALTER TABLE users ADD COLUMN nickname TEXT")
++            await db.commit()
++        except Exception:
++            pass # Column likely exists
++
++        try:
++            await db.execute("ALTER TABLE search_sessions ADD COLUMN original_msg_id INTEGER")
++            await db.commit()
++        except Exception:
++            pass
++
++        try:
++            await db.execute("ALTER TABLE pending_tracks ADD COLUMN route_at INTEGER DEFAULT 0")
++            await db.execute("ALTER TABLE pending_tracks ADD COLUMN route_emoji TEXT DEFAULT ''")
++            await db.commit()
++        except Exception:
++            pass
+diff --git a/app/db/models.py b/app/db/models.py
+index 5c509cf..ec7c8cc 100644
+--- a/app/db/models.py
++++ b/app/db/models.py
+@@ -58,9 +58,22 @@ class TrackInfo:
+     def bitrate_str(self) -> str:
+         if self.is_lossless:
+             return "FLAC"
+-        if self.bitrate <= 0:
+-            return "—"
+-        return f"{self.bitrate}k"
++        if self.bitrate > 0:
++            return f"{self.bitrate}k"
++
++        # Estimate bitrate if missing (filesize in bytes, duration in sec)
++        # bitrate (kbps) = filesize_bytes * 8 / duration_sec / 1000
++        if self.filesize > 0 and self.duration > 0:
++            est_kbps = int(self.filesize * 8 / self.duration / 1000)
++            if est_kbps > 20: # Sanity check
++                return f"~{est_kbps}k"
++
++        # If all else fails, assume 320k or similar depending on platform.
++        # But YouTube is often 128k/160k, VK is 320k.
++        if self.source == "vk": return "~320k"
++        if self.source == "youtube": return "~128k"
++
++        return "—"
+
+     @property
+     def source_icon(self) -> str:
+@@ -77,3 +90,19 @@ class RecognizedTrack:
+     album: str = ""
+     duration: int = 0
+     cover_url: str = ""
++
++@dataclass
++class User:
++    id: int
++    username: str
++    nickname: Optional[str] = None
++    is_admin: int = 0
++
++
++@dataclass
++class GlobalSettings:
++    vote_threshold_pct: int = 25
++    vote_interval_sec: int = 60
++    download_delay_sec: int = 3
++    msg_ttl_days: int = 7
++    forward_mode: str = "resend" # 'resend' | 'forward'
+diff --git a/app/templates/admin/dashboard.html b/app/templates/admin/dashboard.html
+index d2e1c5d..69121ce 100644
+--- a/app/templates/admin/dashboard.html
++++ b/app/templates/admin/dashboard.html
+@@ -40,5 +40,39 @@
+             <button type="submit" class="btn btn-primary btn-danger">Изменить пароль</button>
+         </div>
+     </form>
++
++    <form method="post" action="/admin/settings" class="settings-form glass" style="margin-top: 2rem;">
++        <h2 class="form-title">⚙️ Глобальные настройки бота</h2>
++        <div class="form-group row">
++            <div class="form-col">
++                <label>Порог голосов (%)</label>
++                <input type="number" name="vote_threshold_pct" value="{{ settings.vote_threshold_pct }}" required>
++            </div>
++            <div class="form-col">
++                <label>Интервал ожидания (сек)</label>
++                <input type="number" name="vote_interval_sec" value="{{ settings.vote_interval_sec }}" required>
++            </div>
++        </div>
++        <div class="form-group row">
++            <div class="form-col">
++                <label>Задержка скачивания (сек)</label>
++                <input type="number" name="download_delay_sec" value="{{ settings.download_delay_sec }}" required>
++            </div>
++            <div class="form-col">
++                <label>Автоудаление спама (дней)</label>
++                <input type="number" name="msg_ttl_days" value="{{ settings.msg_ttl_days }}" required>
++            </div>
++        </div>
++        <div class="form-group row">
++            <div class="form-col">
++                <label>Режим переноса (forward/resend)</label>
++                <input type="text" name="forward_mode" value="{{ settings.forward_mode }}" required>
++            </div>
++        </div>
++        <div class="form-actions">
++            <button type="submit" class="btn btn-primary">Сохранить настройки</button>
++        </div>
++    </form>
++
+ </div>
+ {% endblock %}
+diff --git a/bot/handlers/admin.py b/bot/handlers/admin.py
+new file mode 100644
+index 0000000..42caf0d
+--- /dev/null
++++ b/bot/handlers/admin.py
+@@ -0,0 +1,145 @@
++"""Admin utilities: view logs, check status."""
++
++import os
++from aiogram import Router, F
++from aiogram.filters import Command
++from aiogram.types import Message, FSInputFile
++
++from config import settings
++from app.db.database import get_db
++from app.db.models import GlobalSettings
++
++router = Router()
++
++@router.message(Command("logs"))
++async def cmd_logs(message: Message) -> None:
++    """Send bot.log file to the user if they are admin."""
++    is_admin = False
++    db = await get_db()
++    try:
++        row = await db.execute("SELECT is_admin FROM users WHERE id = ?", (message.from_user.id,))
++        res = await row.fetchone()
++        if res and res["is_admin"] == 1:
++            is_admin = True
++    finally:
++        await db.close()
++
++    if not is_admin:
++        return
++
++    log_path = "data/bot.log"
++    if not os.path.exists(log_path):
++        await message.answer("❌ Файл логов (data/bot.log) не найден.")
++        return
++
++    try:
++        await message.answer_document(
++            document=FSInputFile(log_path),
++            caption="📜 Последние логи работы бота."
++        )
++    except Exception as e:
++        await message.answer(f"❌ Ошибка отправки логов: {e}")
++
++@router.message(Command("setadmin"))
++async def cmd_setadmin(message: Message) -> None:
++    """Make the current user an admin if they provide the correct web admin password."""
++    args = message.text.split(maxsplit=1)
++    if len(args) < 2 or args[1] != settings.admin_password:
++        return
++
++    db = await get_db()
++    try:
++        # Ensure user exists first
++        await db.execute("INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)", (message.from_user.id, message.from_user.username))
++
++        await db.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (message.from_user.id,))
++        await db.commit()
++        await message.answer("✅ Теперь ты администратор бота. Доступна команда /logs")
++    finally:
++        await db.close()
++
++
++
++async def get_global_settings() -> GlobalSettings:
++    db = await get_db()
++    try:
++        row = await db.execute("SELECT key, value FROM bot_settings")
++        data = {r["key"]: r["value"] for r in await row.fetchall()}
++
++        # Parse or default
++        return GlobalSettings(
++            vote_threshold_pct=int(data.get("vote_threshold_pct", 25)),
++            vote_interval_sec=int(data.get("vote_interval_sec", 60)),
++            download_delay_sec=int(data.get("download_delay_sec", 3)),
++            msg_ttl_days=int(data.get("msg_ttl_days", 7)),
++            forward_mode=data.get("forward_mode", "resend")
++        )
++    finally:
++        await db.close()
++
++async def update_global_setting(key: str, value: str) -> None:
++    db = await get_db()
++    try:
++        await db.execute("INSERT OR REPLACE INTO bot_settings (key, value) VALUES (?, ?)", (key, value))
++        await db.commit()
++    finally:
++        await db.close()
++
++@router.message(Command("admin_settings"))
++async def cmd_admin_settings(message: Message) -> None:
++    """View global bot settings."""
++    db = await get_db()
++    is_admin = False
++    try:
++        row = await db.execute("SELECT is_admin FROM users WHERE id = ?", (message.from_user.id,))
++        res = await row.fetchone()
++        if res and res["is_admin"] == 1:
++            is_admin = True
++    finally:
++        await db.close()
++
++    if not is_admin:
++        return
++
++    s = await get_global_settings()
++    await message.answer(
++        "⚙️ **Глобальные настройки бота**\n\n"
++        f"Голосование (процент): `{s.vote_threshold_pct}`%\n"
++        f"Задержка проверки голоса: `{s.vote_interval_sec}` сек\n"
++        f"Задержка скачивания: `{s.download_delay_sec}` сек\n"
++        f"Удаление спама через: `{s.msg_ttl_days}` дней\n"
++        f"Режим отправки: `{s.forward_mode}` (resend/forward)\n\n"
++        "Чтобы изменить, используй команду:\n`/set_global <ключ> <значение>`",
++        parse_mode="Markdown"
++    )
++
++@router.message(Command("set_global"))
++async def cmd_set_global(message: Message) -> None:
++    """Change a global bot setting."""
++    db = await get_db()
++    is_admin = False
++    try:
++        row = await db.execute("SELECT is_admin FROM users WHERE id = ?", (message.from_user.id,))
++        res = await row.fetchone()
++        if res and res["is_admin"] == 1:
++            is_admin = True
++    finally:
++        await db.close()
++
++    if not is_admin:
++        return
++
++    args = message.text.split(maxsplit=2)
++    if len(args) < 3:
++        await message.answer("❌ Формат: `/set_global <ключ> <значение>`", parse_mode="Markdown")
++        return
++
++    key, value = args[1], args[2]
++
++    valid_keys = ["vote_threshold_pct", "vote_interval_sec", "download_delay_sec", "msg_ttl_days", "forward_mode"]
++    if key not in valid_keys:
++        await message.answer(f"❌ Неизвестный ключ. Доступные: {', '.join(valid_keys)}")
++        return
++
++    await update_global_setting(key, value)
++    await message.answer(f"✅ Настройка `{key}` изменена на `{value}`", parse_mode="Markdown")
+diff --git a/bot/handlers/callbacks.py b/bot/handlers/callbacks.py
+index ab8a652..7fb7f37 100644
+--- a/bot/handlers/callbacks.py
++++ b/bot/handlers/callbacks.py
+@@ -25,6 +25,7 @@ async def cb_page(callback: CallbackQuery) -> None:
+     lossless = bool(int(parts[3])) if len(parts) > 3 else False
+
+     user_id = callback.from_user.id
++    from bot.handlers.search import get_cached_tracks
+     tracks = get_cached_tracks(user_id)
+     if not tracks:
+         await callback.answer("Результаты устарели, выполни поиск снова.")
+@@ -52,6 +53,7 @@ async def cb_filter(callback: CallbackQuery) -> None:
+     page = int(parts[3]) if len(parts) > 3 else 1
+
+     user_id = callback.from_user.id
++    from bot.handlers.search import get_cached_tracks
+     tracks = get_cached_tracks(user_id)
+     if not tracks:
+         await callback.answer("Результаты устарели.")
+@@ -85,6 +87,7 @@ async def cb_download(callback: CallbackQuery) -> None:
+     quality = parts[2]
+
+     user_id = callback.from_user.id
++    from bot.handlers.search import get_cached_tracks
+     tracks = get_cached_tracks(user_id)
+
+     if track_idx < 0 or track_idx >= len(tracks):
+@@ -107,13 +110,54 @@ async def cb_download(callback: CallbackQuery) -> None:
+             cleanup_file(file_path)
+             return
+
+-        await callback.message.answer_audio(
++
++        caption_text = f"{track.source_icon} {track.artist} – {track.title}\n👤 #{callback.from_user.id}"
++        if callback.from_user.username:
++            caption_text += f" (@{callback.from_user.username})"
++
++        audio_msg = await callback.message.answer_audio(
+             audio=FSInputFile(file_path),
+             title=track.title,
+             performer=track.artist,
+             duration=track.duration,
+-            caption=f"{track.source_icon} {track.artist} – {track.title}",
++            caption=caption_text,
++            message_thread_id=callback.message.message_thread_id
+         )
++
++        # Save to pending_tracks
++        if callback.message.chat.type != "private":
++            from app.db.database import get_db
++            import json
++            from dataclasses import asdict
++            db = await get_db()
++            try:
++                # We need to save the search message ID to delete it later
++                # We will keep the search message so users can download other tracks
++                # Or we can link it. The PRD says "search message and original request are kept until vote passes".
++                # Find original msg id from session
++                orig_id = None
++                row = await db.execute("SELECT original_msg_id FROM search_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
++                res = await row.fetchone()
++                if res:
++                    orig_id = res["original_msg_id"]
++
++                # Add the column to pending_tracks if not exists
++                try:
++                    await db.execute("ALTER TABLE pending_tracks ADD COLUMN original_msg_id INTEGER")
++                    await db.commit()
++                except:
++                    pass
++
++                await db.execute(
++                    "INSERT INTO pending_tracks (chat_id, audio_msg_id, search_msg_id, user_id, track_json, original_msg_id) VALUES (?, ?, ?, ?, ?, ?)",
++                    (callback.message.chat.id, audio_msg.message_id, callback.message.message_id, user_id, json.dumps(asdict(track)), orig_id)
++                )
++                await db.commit()
++            except Exception as dbe:
++                logger.error(f"Failed to save pending track: {dbe}")
++            finally:
++                await db.close()
++
+         await status.delete()
+
+     except Exception as e:
+@@ -128,6 +172,7 @@ async def cb_download(callback: CallbackQuery) -> None:
+ async def cb_back(callback: CallbackQuery) -> None:
+     """Back to search results."""
+     user_id = callback.from_user.id
++    from bot.handlers.search import get_cached_tracks
+     tracks = get_cached_tracks(user_id)
+     if tracks:
+         text = _format_results(tracks, 1, 10, len(tracks))
+@@ -139,9 +184,23 @@ async def cb_back(callback: CallbackQuery) -> None:
+ @router.callback_query(F.data.startswith("playlist:"))
+ async def cb_playlist(callback: CallbackQuery) -> None:
+     """Handle playlist emoji buttons — route track to forum topic."""
+-    emoji = callback.data.split(":", 1)[1]
++    parts = callback.data.split(":")
++    emoji = parts[1]
++    track_idx = int(parts[2]) if len(parts) > 2 else 0
+
+     if emoji == "new":
++        # We need state to save track_idx
++        from aiogram.fsm.context import FSMContext
++
++        # We will dispatch to FSM by modifying the handler signature slightly,
++        # but aiogram automatically injects state if it's in the signature.
++        # Since we can't change signature without breaking aiogram if we don't import FSMContext,
++        # let's just save it into a generic DB table or cache for now to keep it simple and robust.
++
++        # Simpler approach: save it in a small memory dict or DB
++        from bot.handlers.forum import _new_playlist_cache
++        _new_playlist_cache[callback.from_user.id] = track_idx
++
+         await callback.message.answer("📁 Отправь мне эмодзи для нового плейлиста:")
+         await callback.answer()
+         return
+@@ -152,9 +211,33 @@ async def cb_playlist(callback: CallbackQuery) -> None:
+         await callback.answer("📂 Плейлисты работают в группах с топиками. Добавь бота в группу-форум!", show_alert=True)
+         return
+
+-    # Find topic with matching emoji
+-    # This will be handled by forum.py handler
+     await callback.answer(f"Отправляю в топик {emoji}...")
+     # Delegate to forum handler logic
+     from bot.handlers.forum import send_to_topic
+-    await send_to_topic(callback, emoji)
++    await send_to_topic(callback, emoji, track_idx)
++
++@router.callback_query(F.data.startswith("select_track:"))
++async def cb_select_track(callback: CallbackQuery) -> None:
++    """Handle track selection from search results."""
++    parts = callback.data.split(":")
++    track_idx = int(parts[1])
++
++    user_id = callback.from_user.id
++    from bot.handlers.search import get_cached_tracks
++    tracks = get_cached_tracks(user_id)
++
++    if track_idx < 0 or track_idx >= len(tracks):
++        await callback.answer("Трек не найден.", show_alert=True)
++        return
++
++    track = tracks[track_idx]
++
++    # Show track details and options
++    text = f"🎵 Выбран трек:\n<b>{track.artist} – {track.title}</b>\n\nВ какой топик отправить?"
++
++    from bot.keyboards.inline import track_detail_kb
++    is_private = callback.message.chat.type == "private"
++    if is_private:
++        text = f"🎵 Выбран трек:\n<b>{track.artist} – {track.title}</b>"
++    await callback.message.edit_text(text, reply_markup=track_detail_kb(track_idx, is_private=is_private), parse_mode="HTML")
++    await callback.answer()
+diff --git a/bot/handlers/forum.py b/bot/handlers/forum.py
+index fada7b4..71ca0d9 100644
+--- a/bot/handlers/forum.py
++++ b/bot/handlers/forum.py
+@@ -1,6 +1,7 @@
+ """Forum topics management: auto-create playlists, 👎 voting, /topics command."""
+
+ from __future__ import annotations
++from aiogram.dispatcher.event.bases import UNHANDLED
+
+ import logging
+ import os
+@@ -100,8 +101,9 @@ async def cmd_start_topics(message: Message) -> None:
+     await message.answer(f"✅ Создано {created} топиков-плейлистов! Используй /topics для просмотра.")
+
+
+-async def send_to_topic(callback: CallbackQuery, emoji: str) -> None:
+-    """Download track and send it to the forum topic matching the emoji."""
++
++async def send_to_topic(callback: CallbackQuery, emoji: str, track_idx: int = 0) -> None:
++    """Download track and send it to the forum topic matching the emoji, then clean up general chat."""
+     chat_id = callback.message.chat.id
+     user_id = callback.from_user.id
+
+@@ -111,28 +113,48 @@ async def send_to_topic(callback: CallbackQuery, emoji: str) -> None:
+         # Unknown emoji → ask to create topic
+         await callback.message.answer(
+             f"Топик с эмодзи {emoji} не найден.\nСоздать?",
+-            reply_markup=confirm_topic_kb(emoji),
++            reply_markup=confirm_topic_kb(emoji, track_idx),
+         )
+         return
+
+     topic_id = topic_map[emoji]
+     tracks = get_cached_tracks(user_id)
+-    if not tracks:
++    if not tracks or track_idx >= len(tracks):
+         await callback.message.answer("Результаты устарели, выполни поиск снова.")
+         return
+
+-    # Download first/selected track
+-    track = tracks[0]
++    track = tracks[track_idx]
++
+     status = await callback.message.answer(f"⏳ Скачиваю и отправляю в {emoji}...")
+
+     file_path = None
+     try:
+-        file_path = await download_track(track)
++        from services.downloader import download_track, cleanup_file
++
++        # Get quality setting
++        from app.db.database import get_db
++        db = await get_db()
++        quality = "mp3_320"
++        try:
++            row = await db.execute("SELECT default_quality FROM user_settings WHERE user_id = ?", (user_id,))
++            res = await row.fetchone()
++            if res:
++                quality = res["default_quality"]
++        finally:
++            await db.close()
++
++        file_path = await download_track(track, quality)
+         if not file_path or not os.path.exists(file_path):
+             await status.edit_text("❌ Не удалось скачать.")
+             return
+
+-        await callback.message.bot.send_audio(
++        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
++        undo_kb = InlineKeyboardMarkup(inline_keyboard=[[
++            InlineKeyboardButton(text="⏪ Отменить (Undo)", callback_data=f"undo:{chat_id}:{topic_id}")
++        ]])
++
++
++        sent_msg = await callback.message.bot.send_audio(
+             chat_id=chat_id,
+             message_thread_id=topic_id,
+             audio=FSInputFile(file_path),
+@@ -140,30 +162,58 @@ async def send_to_topic(callback: CallbackQuery, emoji: str) -> None:
+             performer=track.artist,
+             duration=track.duration,
+             caption=f"{track.source_icon} {track.artist} – {track.title} [{track.bitrate_str}]",
++            reply_markup=undo_kb
+         )
+-        await status.edit_text(f"✅ Отправлено в {emoji}!")
++
++        # Track message in DB
++        db = await get_db()
++        try:
++            await db.execute("INSERT INTO topic_messages (chat_id, topic_id, message_id) VALUES (?, ?, ?)",
++                             (chat_id, topic_id, sent_msg.message_id))
++            await db.commit()
++        finally:
++            await db.close()
++
++
++        # Clean up spam from General Topic
++        try:
++            await callback.message.delete()
++            await status.delete()
++        except Exception as e:
++            logger.warning(f"Failed to delete search messages: {e}")
+
+     except Exception as e:
+         logger.error("Send to topic failed: %s", e)
+         await status.edit_text(f"❌ Ошибка: {e}")
+     finally:
+-        if file_path:
++        if file_path and os.path.exists(file_path):
++            from services.downloader import cleanup_file
+             cleanup_file(file_path)
+-
+-
+ @router.callback_query(F.data.startswith("topic:create:"))
+ async def cb_create_topic(callback: CallbackQuery) -> None:
+     """Create a new forum topic with the given emoji."""
+-    emoji = callback.data.split(":", 2)[2]
++    parts = callback.data.split(":")
++    emoji = parts[2]
++    track_idx = int(parts[3]) if len(parts) > 3 else 0
+     chat = callback.message.chat
+
+     try:
++        from bot.handlers.search import get_cached_tracks
++        tracks = get_cached_tracks(callback.from_user.id)
++        name = "Новый плейлист"
++        if tracks and track_idx < len(tracks):
++            # Attempt to name after genre or artist if known, else artist
++            name = tracks[track_idx].artist[:10] + "..."
++
+         topic = await callback.message.bot.create_forum_topic(
+             chat_id=chat.id,
+-            name=f"{emoji} Новый плейлист",
++            name=f"{emoji} {name}",
+         )
+-        await _save_topic(chat.id, topic.message_thread_id, emoji, "Новый плейлист")
+-        await callback.message.edit_text(f"✅ Топик {emoji} создан!")
++        await _save_topic(chat.id, topic.message_thread_id, emoji, name)
++        await callback.message.edit_text(f"✅ Топик {emoji} создан! Отправляю трек...")
++
++        # After creating topic, send the track
++        await send_to_topic(callback, emoji, track_idx)
+     except Exception as e:
+         await callback.message.edit_text(f"❌ Ошибка создания: {e}")
+     await callback.answer()
+@@ -176,29 +226,199 @@ async def cb_cancel_topic(callback: CallbackQuery) -> None:
+
+
+ # ── 👎 Voting handler ──────────────────────────────
++
++async def _check_empty_topic(bot, chat_id: int, topic_id: int) -> None:
++    """Check if a topic has become empty after message deletion. If so, delete the topic to keep the group clean."""
++    from app.db.database import get_db
++    db = await get_db()
++    try:
++        # Check how many messages we tracked in this topic
++        row = await db.execute("SELECT COUNT(*) as count FROM topic_messages WHERE chat_id = ? AND topic_id = ?", (chat_id, topic_id))
++        res = await row.fetchone()
++
++        # If count drops to 0, close and delete the topic
++        if res and res["count"] == 0:
++            try:
++                # We can't delete the General topic (message_thread_id=None)
++                if topic_id is not None:
++                    # Telegram lets bots close or delete topics if they have the right permissions
++                    await bot.delete_forum_topic(chat_id, topic_id)
++                    # Remove from our DB
++                    await db.execute("DELETE FROM forum_topics WHERE chat_id = ? AND topic_id = ?", (chat_id, topic_id))
++                    await db.commit()
++            except Exception as e:
++                logger.warning(f"Could not delete empty topic {topic_id}: {e}")
++    finally:
++        await db.close()
++
+ @router.message_reaction()
+ async def handle_reaction(event: MessageReactionUpdated) -> None:
+-    """Track 👎 reactions. If all members downvoted, delete the message."""
+-    if not event.new_reaction:
+-        return
++    """Process reactions on tracks for voting."""
++    chat = event.chat
++    from app.db.database import get_db
++    from bot.handlers.admin import get_global_settings
++
++    db = await get_db()
++    try:
++        # 1. Check if it's a pending track awaiting a vote
++        row = await db.execute("SELECT * FROM pending_tracks WHERE chat_id = ? AND audio_msg_id = ?", (chat.id, event.message_id))
++        pending_track = await row.fetchone()
++
++        if pending_track:
++
++
++            # If user removed their reaction
++            voter_id = event.user.id if event.user else (event.actor_chat.id if hasattr(event, "actor_chat") and event.actor_chat else 0)
++            if not voter_id:
++                return
++
++            if not event.new_reaction:
++                await db.execute("DELETE FROM track_votes WHERE msg_id = ? AND user_id = ?", (event.message_id, voter_id))
++            else:
++                # User added or changed their reaction
++                emoji = getattr(event.new_reaction[0], 'emoji', getattr(event.new_reaction[0], 'custom_emoji_id', ''))
++                if emoji:
++                    await db.execute("INSERT OR REPLACE INTO track_votes (msg_id, user_id, emoji) VALUES (?, ?, ?)", (event.message_id, voter_id, emoji))
++            await db.commit()
++
++            # Check if threshold is met to schedule routing
++            s = await get_global_settings()
++            member_count = await event.bot.get_chat_member_count(chat.id)
++            threshold = max(1, int(member_count * (s.vote_threshold_pct / 100.0)))
++
++            row = await db.execute("SELECT emoji, COUNT(*) as c FROM track_votes WHERE msg_id = ? GROUP BY emoji ORDER BY c DESC LIMIT 1", (event.message_id,))
++            top_vote = await row.fetchone()
++
++            if top_vote and top_vote["c"] >= threshold:
++
++                # Update scheduled time (if it wasn't already scheduled)
++                import time
++                route_time = int(time.time()) + s.vote_interval_sec
++                try:
++                    await db.execute("UPDATE pending_tracks SET route_at = ?, route_emoji = ? WHERE id = ? AND (route_at = 0 OR route_at IS NULL)",
++                                     (route_time, top_vote["emoji"], pending_track["id"]))
++                    await db.commit()
++                except Exception:
++                    pass
++            else:
++                # If votes drop below threshold, cancel the routing
++                try:
++                    await db.execute("UPDATE pending_tracks SET route_at = 0 WHERE id = ?", (pending_track["id"],))
++                    await db.commit()
++                except Exception:
++                    pass
++            return
++
++        # 2. Check if it's an ALREADY ROUTED track in a topic being downvoted
++        row = await db.execute("SELECT topic_id FROM topic_messages WHERE chat_id = ? AND message_id = ?", (chat.id, event.message_id))
++        res = await row.fetchone()
++        if res:
++            voter_id = event.user.id if event.user else (event.actor_chat.id if hasattr(event, "actor_chat") and event.actor_chat else 0)
++            if not voter_id:
++                return
++
++            await db.execute("CREATE TABLE IF NOT EXISTS track_votes (msg_id INTEGER, user_id INTEGER, emoji TEXT, UNIQUE(msg_id, user_id))")
++            await db.commit()
++
++            has_thumbs_down = any(getattr(r, 'emoji', '') == '👎' for r in event.new_reaction) if event.new_reaction else False
++
++            if not has_thumbs_down:
++                # User removed downvote or changed it to something else
++                await db.execute("DELETE FROM track_votes WHERE msg_id = ? AND user_id = ? AND emoji = '👎'", (event.message_id, voter_id))
++                await db.commit()
++            else:
++                # Add downvote
++                await db.execute("INSERT OR REPLACE INTO track_votes (msg_id, user_id, emoji) VALUES (?, ?, '👎')", (event.message_id, voter_id))
++                await db.commit()
++
++            # Check threshold
++            s = await get_global_settings()
++            member_count = await event.bot.get_chat_member_count(chat.id)
++            threshold = max(1, int(member_count * (s.vote_threshold_pct / 100.0)))
++
++            row = await db.execute("SELECT COUNT(*) as c FROM track_votes WHERE msg_id = ? AND emoji = '👎'", (event.message_id,))
++            downvotes = await row.fetchone()
++
++            if downvotes and downvotes["c"] >= threshold:
++                try:
++                    await event.bot.delete_message(chat.id, event.message_id)
++                except Exception:
++                    pass
++                await db.execute("DELETE FROM topic_messages WHERE chat_id = ? AND message_id = ?", (chat.id, event.message_id))
++                await db.execute("DELETE FROM track_votes WHERE msg_id = ?", (event.message_id,))
++                await db.commit()
++
++                await _check_empty_topic(event.bot, chat.id, res["topic_id"])
++    except Exception as e:
++        logger.warning("Reaction handling error: %s", e)
++    finally:
++        await db.close()
+
+-    has_thumbs_down = any(
+-        getattr(r, 'emoji', '') == '👎' for r in event.new_reaction
+-    )
+-    if not has_thumbs_down:
+-        return
++@router.callback_query(F.data.startswith("undo:"))
++async def cb_undo(callback: CallbackQuery) -> None:
++    """Handle Undo: delete the track from the specific topic and notify the user."""
++    parts = callback.data.split(":")
++    chat_id = int(parts[1])
++    topic_id = int(parts[2])
+
+     try:
+-        chat = event.chat
+-        member_count = await event.bot.get_chat_member_count(chat.id)
+-        # -1 for the bot itself
+-        threshold = max(1, member_count - 1)
+-
+-        # Note: Telegram doesn't expose per-reaction counts in real-time.
+-        # This is a simplified approach — in production, track votes in DB.
+-        logger.info(
+-            "👎 reaction on message %d in chat %d (need %d votes)",
+-            event.message_id, chat.id, threshold,
+-        )
++        await callback.message.delete()
++
++        from app.db.database import get_db
++        db = await get_db()
++        try:
++            await db.execute("DELETE FROM topic_messages WHERE chat_id = ? AND message_id = ?", (chat_id, callback.message.message_id))
++            await db.commit()
++        finally:
++            await db.close()
++
++        # Check if topic is empty
++        await _check_empty_topic(callback.message.bot, chat_id, topic_id)
++
++        # Restore the menu in General chat
++        user_id = callback.from_user.id
++        from bot.handlers.search import get_cached_tracks, _format_results
++        from bot.keyboards.inline import search_results_kb
++
++        tracks = get_cached_tracks(user_id)
++        if tracks:
++            text = _format_results(tracks, page=1, per_page=10, total=len(tracks))
++            kb = search_results_kb(tracks, page=1, total=len(tracks), per_page=10)
++
++            # Send the search results back to the general chat
++            await callback.message.bot.send_message(
++                chat_id=chat_id,
++                text=f"⏪ Действие отменено пользователем {callback.from_user.first_name}.\n\n{text}",
++                reply_markup=kb,
++                message_thread_id=None # General topic
++            )
++
++        await callback.answer("✅ Отменено. Трек удалён из топика, результаты возвращены в Общий чат.")
+     except Exception as e:
+-        logger.warning("Reaction handling error: %s", e)
++        logger.error(f"Failed to undo: {e}")
++        await callback.answer("❌ Ошибка отмены", show_alert=True)
++
++# In-memory dictionary to hold track_idx when creating a new playlist via text emoji message
++_new_playlist_cache = {}
++
++# We need a message handler to catch the emoji sent by the user for a new playlist
++@router.message(F.text & F.chat.type.in_({"group", "supergroup"}))
++async def handle_new_playlist_emoji(message: Message) -> None:
++    """Catch emoji text input to create a new playlist for a waiting track."""
++    user_id = message.from_user.id
++    if user_id not in _new_playlist_cache:
++        return UNHANDLED
++
++    track_idx = _new_playlist_cache.pop(user_id)
++    emoji = message.text.strip()
++
++    if len(emoji) > 5:
++        await message.answer("Пожалуйста, отправь только один эмодзи 😅")
++        _new_playlist_cache[user_id] = track_idx # put back
++        return
++
++    from bot.keyboards.inline import confirm_topic_kb
++    await message.answer(
++        f"Топик с эмодзи {emoji} не найден.\nСоздать?",
++        reply_markup=confirm_topic_kb(emoji, track_idx),
++    )
+diff --git a/bot/handlers/onboarding.py b/bot/handlers/onboarding.py
+new file mode 100644
+index 0000000..a00f19d
+--- /dev/null
++++ b/bot/handlers/onboarding.py
+@@ -0,0 +1,91 @@
++"""Handles user joining, onboarding, and nickname configuration."""
++
++import logging
++from aiogram import Router, F
++from aiogram.types import Message, ChatMemberUpdated
++from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, Command
++
++from app.db.database import get_db
++
++router = Router()
++logger = logging.getLogger(__name__)
++
++async def _ensure_user(user_id: int, username: str) -> None:
++    db = await get_db()
++    try:
++        await db.execute(
++            "INSERT OR IGNORE INTO users (id, username) VALUES (?, ?)",
++            (user_id, username)
++        )
++        await db.commit()
++    finally:
++        await db.close()
++
++async def _update_nickname(user_id: int, nickname: str) -> None:
++    db = await get_db()
++    try:
++        await db.execute("UPDATE users SET nickname = ? WHERE id = ?", (nickname, user_id))
++        await db.commit()
++    finally:
++        await db.close()
++
++async def _get_nickname(user_id: int, first_name: str) -> str:
++    db = await get_db()
++    try:
++        row = await db.execute("SELECT nickname FROM users WHERE id = ?", (user_id,))
++        data = await row.fetchone()
++        if data and data["nickname"]:
++            return data["nickname"]
++        return first_name
++    finally:
++        await db.close()
++
++@router.chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION))
++async def on_user_join(event: ChatMemberUpdated) -> None:
++    """Triggered when a user (or the bot) joins a group."""
++    new_member = event.new_chat_member.user
++
++    # If the bot itself was added
++    if new_member.id == event.bot.id:
++        if not getattr(event.chat, 'is_forum', False):
++            await event.bot.send_message(
++                event.chat.id,
++                "Привет! 👋 Чтобы я работал корректно и мог сортировать музыку по плейлистам, "
++                "пожалуйста, включите <b>Темы (Форум)</b> в настройках этой группы.\n\n"
++                "После включения тем, напишите команду /start_topics для создания стартовых плейлистов."
++            )
++        return
++
++    # A normal user joined
++    await _ensure_user(new_member.id, new_member.username or "")
++
++    # In groups with topics, send to the General topic if possible
++    # Telegram implicitly sets message_thread_id=None for the General topic
++    await event.bot.send_message(
++        event.chat.id,
++        f"Добро пожаловать, {new_member.first_name}! 🎉\n\n"
++        "Как мне к тебе обращаться? Установи свой никнейм командой:\n"
++        "<code>/nickname ТвойНик</code>",
++        parse_mode="HTML"
++    )
++
++@router.message(Command("nickname"))
++async def cmd_nickname(message: Message) -> None:
++    """Allow user to set their preferred nickname."""
++    args = message.text.split(maxsplit=1)
++
++    await _ensure_user(message.from_user.id, message.from_user.username or "")
++
++    if len(args) < 2:
++        current_nick = await _get_nickname(message.from_user.id, message.from_user.first_name)
++        await message.answer(
++            f"Сейчас я обращаюсь к тебе так: <b>{current_nick}</b>\n\n"
++            "Чтобы изменить, напиши: <code>/nickname НовоеИмя</code>",
++            parse_mode="HTML"
++        )
++        return
++
++    new_nickname = args[1][:50] # Limit length
++    await _update_nickname(message.from_user.id, new_nickname)
++    await message.answer(f"Отлично! Теперь я буду обращаться к тебе: <b>{new_nickname}</b>", parse_mode="HTML")
++
+diff --git a/bot/handlers/recognize.py b/bot/handlers/recognize.py
+index 6bef044..3a3e3d5 100644
+--- a/bot/handlers/recognize.py
++++ b/bot/handlers/recognize.py
+@@ -33,7 +33,20 @@ async def _download_tg_file(message: Message, file_id: str) -> str:
+
+ async def _recognize_and_search(message: Message, audio_path: str) -> None:
+     """Recognize track from audio file, then search for full version."""
+-    status = await message.answer("🎧 Распознаю трек...")
++
++
++    # Cross-Topic Routing
++    if getattr(message.chat, 'is_forum', False) and getattr(message, 'message_thread_id', None) is not None:
++        try:
++            await message.delete()
++        except Exception:
++            pass
++
++    status = await message.bot.send_message(
++        chat_id=message.chat.id,
++        text="🎧 Распознаю трек...",
++        message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
++    )
+
+     try:
+         result = await recognizer.recognize(audio_path, settings.acoustid_api_key)
+@@ -68,6 +81,32 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
+         user_id = message.from_user.id
+         _search_cache[user_id] = all_tracks
+
++        import uuid
++        import json
++        from dataclasses import asdict
++        from app.db.database import get_db
++        session_id = str(uuid.uuid4())
++
++        db = await get_db()
++        try:
++            tracks_json = json.dumps([asdict(t) for t in all_tracks])
++            orig_id = message.message_id if getattr(message, 'message_thread_id', None) is None else None
++
++            await db.execute(
++                "INSERT INTO search_sessions (session_id, user_id, chat_id, general_msg_ids, query, state_data, original_msg_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
++                (session_id, user_id, message.chat.id, "[]", query, tracks_json, orig_id)
++            )
++            await db.commit()
++
++            # Record the status message so it gets deleted on route
++            msg_ids = json.dumps([status.message_id])
++            await db.execute("UPDATE search_sessions SET general_msg_ids = ? WHERE session_id = ?", (msg_ids, session_id))
++            await db.commit()
++        except Exception as db_e:
++            logger.error(f"Failed to save session: {db_e}")
++        finally:
++            await db.close()
++
+         text = f"🎵 <b>{result.artist} – {result.title}</b>\n\n" + _format_results(all_tracks, 1, 10, len(all_tracks))
+         kb = search_results_kb(all_tracks, 1, len(all_tracks))
+         await status.edit_text(text, reply_markup=kb, parse_mode="HTML")
+@@ -80,6 +119,8 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
+ # ── Voice message ──────────────────────────────────
+ @router.message(F.voice)
+ async def handle_voice(message: Message) -> None:
++
++
+     path = await _download_tg_file(message, message.voice.file_id)
+     await _recognize_and_search(message, path)
+
+@@ -87,6 +128,8 @@ async def handle_voice(message: Message) -> None:
+ # ── Video note (circle) ────────────────────────────
+ @router.message(F.video_note)
+ async def handle_video_note(message: Message) -> None:
++
++
+     path = await _download_tg_file(message, message.video_note.file_id)
+     await _recognize_and_search(message, path)
+
+@@ -94,6 +137,8 @@ async def handle_video_note(message: Message) -> None:
+ # ── Video file (forwarded clips) ───────────────────
+ @router.message(F.video)
+ async def handle_video(message: Message) -> None:
++
++
+     if message.video.file_size and message.video.file_size > 20 * 1024 * 1024:
+         await message.answer("⚠️ Видео слишком большое (>20MB). Отправь покороче.")
+         return
+@@ -104,6 +149,8 @@ async def handle_video(message: Message) -> None:
+ # ── Audio file ─────────────────────────────────────
+ @router.message(F.audio)
+ async def handle_audio(message: Message) -> None:
++
++
+     path = await _download_tg_file(message, message.audio.file_id)
+     await _recognize_and_search(message, path)
+
+@@ -111,8 +158,21 @@ async def handle_audio(message: Message) -> None:
+ # ── URL links (Instagram, TikTok, etc.) ────────────
+ @router.message(F.text.regexp(URL_REGEX))
+ async def handle_link(message: Message) -> None:
++
+     url = URL_REGEX.search(message.text).group(0)
+-    status = await message.answer(f"🔗 Скачиваю видео с {url[:40]}...")
++
++    # Cross-Topic Routing
++    if getattr(message.chat, 'is_forum', False) and getattr(message, 'message_thread_id', None) is not None:
++        try:
++            await message.delete()
++        except Exception:
++            pass
++
++    status = await message.bot.send_message(
++        chat_id=message.chat.id,
++        text=f"🔗 Скачиваю видео с {url[:40]}...",
++        message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
++    )
+
+     try:
+         audio_path = await yt_svc.download_from_url(url)
+diff --git a/bot/handlers/search.py b/bot/handlers/search.py
+index 6a9e0ae..5abbada 100644
+--- a/bot/handlers/search.py
++++ b/bot/handlers/search.py
+@@ -41,11 +41,26 @@ def _format_results(tracks: list[TrackInfo], page: int, per_page: int, total: in
+ @router.message(F.text & ~F.text.startswith("/") & ~F.text.startswith("http"))
+ async def text_search(message: Message) -> None:
+     """Handle text search queries."""
++
++
+     query = message.text.strip()
+     if not query or len(query) < 2:
+         return
+
+-    status_msg = await message.answer("🔍 Ищу на всех платформах...")
++    # Cross-Topic Routing: If requested in a specific topic, move it to General
++    if getattr(message.chat, 'is_forum', False) and getattr(message, 'message_thread_id', None) is not None:
++        try:
++            await message.delete()
++        except Exception:
++            pass
++
++    # Always send status to the General topic or DM
++    status_msg = await message.bot.send_message(
++        chat_id=message.chat.id,
++        text=f"🔍 Ищу на всех платформах: <b>{query}</b>...",
++        message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None),
++        parse_mode="HTML"
++    )
+
+     try:
+         # Parallel search
+diff --git a/bot/keyboards/inline.py b/bot/keyboards/inline.py
+index 4ed329c..0f02ec6 100644
+--- a/bot/keyboards/inline.py
++++ b/bot/keyboards/inline.py
+@@ -6,6 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+ from app.db.models import TrackInfo
+
+
++
+ def search_results_kb(
+     tracks: list[TrackInfo],
+     page: int,
+@@ -17,6 +18,24 @@ def search_results_kb(
+     """Build keyboard for search results: pagination + filters + playlist emojis."""
+     total_pages = max(1, (total + per_page - 1) // per_page)
+     buttons: list[list[InlineKeyboardButton]] = []
++
++    start = (page - 1) * per_page
++    end = min(start + per_page, total)
++
++    # Render track select buttons in rows of 5
++    track_row1 = []
++    track_row2 = []
++
++    for i in range(start, end):
++        display_idx = i - start + 1
++        btn = InlineKeyboardButton(text=f"[{display_idx}] Выбрать", callback_data=f"select_track:{i}")
++        if len(track_row1) < 5:
++            track_row1.append(btn)
++        else:
++            track_row2.append(btn)
++
++    if track_row1: buttons.append(track_row1)
++    if track_row2: buttons.append(track_row2)
+
+     # Row 1-2: Pagination
+     nav_row1: list[InlineKeyboardButton] = []
+@@ -52,28 +71,21 @@ def search_results_kb(
+         InlineKeyboardButton(text="Title", callback_data=f"filter:title:asc:{page}"),
+     ])
+
+-    # Row 4: Playlist emojis
++    return InlineKeyboardMarkup(inline_keyboard=buttons)
++
++def track_detail_kb(track_index: int, is_private: bool = False) -> InlineKeyboardMarkup:
++    """Keyboard for a specific track: only downloads."""
++    buttons = []
++
+     buttons.append([
+-        InlineKeyboardButton(text="❤️", callback_data="playlist:❤️"),
+-        InlineKeyboardButton(text="🔥", callback_data="playlist:🔥"),
+-        InlineKeyboardButton(text="😢", callback_data="playlist:😢"),
+-        InlineKeyboardButton(text="🎉", callback_data="playlist:🎉"),
+-        InlineKeyboardButton(text="📁+", callback_data="playlist:new"),
++        InlineKeyboardButton(text="⬇️ Скачать MP3", callback_data=f"dl:{track_index}:mp3_320"),
++        InlineKeyboardButton(text="⬇️ Скачать FLAC", callback_data=f"dl:{track_index}:flac"),
+     ])
+-
++    buttons.append([InlineKeyboardButton(text="← Назад к списку", callback_data="back_to_list")])
++
+     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+-def track_detail_kb(track_index: int) -> InlineKeyboardMarkup:
+-    """Keyboard for a specific track: download buttons."""
+-    return InlineKeyboardMarkup(inline_keyboard=[
+-        [
+-            InlineKeyboardButton(text="⬇️ MP3 320", callback_data=f"dl:{track_index}:mp3_320"),
+-            InlineKeyboardButton(text="⬇️ FLAC", callback_data=f"dl:{track_index}:flac"),
+-        ],
+-        [InlineKeyboardButton(text="← Назад к списку", callback_data="back_to_list")],
+-    ])
+-
+
+ def settings_kb(quality: str, priority: str) -> InlineKeyboardMarkup:
+     """Settings menu keyboard."""
+@@ -92,11 +104,11 @@ def settings_kb(quality: str, priority: str) -> InlineKeyboardMarkup:
+     ])
+
+
+-def confirm_topic_kb(emoji: str) -> InlineKeyboardMarkup:
++def confirm_topic_kb(emoji: str, track_idx: int = 0) -> InlineKeyboardMarkup:
+     """Confirm creating a new forum topic."""
+     return InlineKeyboardMarkup(inline_keyboard=[
+         [
+-            InlineKeyboardButton(text="✅ Да", callback_data=f"topic:create:{emoji}"),
++            InlineKeyboardButton(text="✅ Да", callback_data=f"topic:create:{emoji}:{track_idx}"),
+             InlineKeyboardButton(text="❌ Нет", callback_data="topic:cancel"),
+         ],
+     ])
+diff --git a/bot/tasks.py b/bot/tasks.py
+new file mode 100644
+index 0000000..592dd92
+--- /dev/null
++++ b/bot/tasks.py
+@@ -0,0 +1,134 @@
++import asyncio
++import logging
++from datetime import datetime, timedelta
++from app.db.database import get_db
++from bot.handlers.admin import get_global_settings
++
++logger = logging.getLogger(__name__)
++
++async def cleanup_loop(bot):
++    """Periodically check for old pending tracks, and process scheduled track routing."""
++    from bot.handlers.forum import _get_topic_map, _save_topic
++    import time
++    import json
++    from app.db.models import TrackInfo
++
++    while True:
++        try:
++            s = await get_global_settings()
++            db = await get_db()
++
++            # 1. Process routing (tracks that hit threshold and passed the wait time)
++            now = int(time.time())
++            try:
++                row = await db.execute("SELECT * FROM pending_tracks WHERE route_at > 0 AND route_at <= ?", (now,))
++                ready_tracks = await row.fetchall()
++
++                for pt in ready_tracks:
++                    try:
++                        winning_emoji = pt["route_emoji"]
++                        chat_id = pt["chat_id"]
++
++                        if winning_emoji == "👎":
++                            try:
++                                await bot.delete_message(chat_id, pt["audio_msg_id"])
++                            except: pass
++                        else:
++                            # Route track
++                            track_data = json.loads(pt["track_json"])
++                            track = TrackInfo(**track_data)
++
++                            topic_map = await _get_topic_map(chat_id)
++                            topic_id = topic_map.get(winning_emoji)
++
++                            if not topic_id:
++                                # Create topic
++                                name = track.artist[:15]
++                                try:
++                                    topic = await bot.create_forum_topic(chat_id=chat_id, name=f"{winning_emoji} {name}")
++                                    topic_id = topic.message_thread_id
++                                    await _save_topic(chat_id, topic_id, winning_emoji, name)
++                                except Exception as e:
++                                    logger.error(f"Failed to create topic: {e}")
++                                    raise  # Stop routing this track but delete it from pending so we don't spam
++
++                            new_msg_id = None
++                            try:
++                                if s.forward_mode == "forward":
++                                    msg = await bot.forward_message(chat_id=chat_id, from_chat_id=chat_id, message_id=pt["audio_msg_id"], message_thread_id=topic_id)
++                                    new_msg_id = msg.message_id
++                                else:
++                                    msg = await bot.copy_message(chat_id=chat_id, from_chat_id=chat_id, message_id=pt["audio_msg_id"], message_thread_id=topic_id)
++                                    new_msg_id = msg.message_id
++
++                                # Save to topic_messages to track it for downvotes and auto-cleanup
++                                if new_msg_id:
++                                    await db.execute("INSERT INTO topic_messages (chat_id, topic_id, message_id) VALUES (?, ?, ?)", (chat_id, topic_id, new_msg_id))
++                            except Exception as fwd_err:
++                                logger.error(f"Failed to forward/copy message {pt['audio_msg_id']}: {fwd_err}")
++                                raise
++
++                            # Delete original audio message
++                            try:
++                                await bot.delete_message(chat_id, pt["audio_msg_id"])
++                            except: pass
++
++                    except Exception as route_exec_err:
++                        logger.error(f"Error executing route for track {pt['id']}: {route_exec_err}")
++                    finally:
++                        # Ensure cleanup always happens regardless of routing success
++                        # Cleanup search menu message
++                        if pt["search_msg_id"] and pt["search_msg_id"] > 0:
++                            try:
++                                await bot.delete_message(pt["chat_id"], pt["search_msg_id"])
++                            except: pass
++
++                        # Cleanup original text/link message
++                        if "original_msg_id" in pt.keys() and pt["original_msg_id"] and pt["original_msg_id"] > 0:
++                            try:
++                                await bot.delete_message(pt["chat_id"], pt["original_msg_id"])
++                            except: pass
++
++                        # Finally remove from pending to prevent poison loop
++                        try:
++                            await db.execute("DELETE FROM pending_tracks WHERE id = ?", (pt["id"],))
++                            await db.commit()
++                        except: pass
++            except Exception as routing_err:
++                logger.error(f"Routing error: {routing_err}")
++
++            # 2. Cleanup old spam (7 days)
++            query = f"SELECT * FROM pending_tracks WHERE datetime(created_at) < datetime('now', '-{s.msg_ttl_days} days')"
++
++            try:
++                row = await db.execute(query)
++                expired_tracks = await row.fetchall()
++
++                for pt in expired_tracks:
++                    try:
++                        await bot.delete_message(pt["chat_id"], pt["audio_msg_id"])
++                    except: pass
++                    if pt["search_msg_id"] and pt["search_msg_id"] > 0:
++                        try:
++                            await bot.delete_message(pt["chat_id"], pt["search_msg_id"])
++                        except: pass
++
++                    if "original_msg_id" in pt.keys() and pt["original_msg_id"] and pt["original_msg_id"] > 0:
++                        try:
++                            await bot.delete_message(pt["chat_id"], pt["original_msg_id"])
++                        except: pass
++
++                    await db.execute("DELETE FROM pending_tracks WHERE id = ?", (pt["id"],))
++                    await db.commit()
++            except Exception as cleanup_err:
++                logger.error(f"Cleanup error: {cleanup_err}")
++
++        except Exception as e:
++            logger.error(f"Error in task loop: {e}")
++        finally:
++            try:
++                await db.close()
++            except: pass
++
++        # Check every 5 seconds for fast routing
++        await asyncio.sleep(5)
+diff --git a/run.py b/run.py
+index 49637a1..64f2eee 100644
+--- a/run.py
++++ b/run.py
+@@ -16,10 +16,23 @@ from bot.handlers.recognize import router as recognize_router
+ from bot.handlers.callbacks import router as callbacks_router
+ from bot.handlers.forum import router as forum_router
+ from bot.handlers.settings import router as settings_router
++from bot.handlers.admin import router as admin_router
++from bot.handlers.onboarding import router as onboarding_router
++
++import os
++from pathlib import Path
++
++log_dir = Path("data")
++log_dir.mkdir(exist_ok=True)
++log_file = log_dir / "bot.log"
+
+ logging.basicConfig(
+     level=logging.INFO,
+     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
++    handlers=[
++        logging.StreamHandler(),
++        logging.FileHandler(log_file, encoding="utf-8")
++    ]
+ )
+ logger = logging.getLogger(__name__)
+
+@@ -47,12 +60,17 @@ async def run_bot() -> None:
+
+     # Register routers (order matters: specific first)
+     dp.include_router(start_router)
++    dp.include_router(onboarding_router)
+     dp.include_router(settings_router)
++    dp.include_router(admin_router)
+     dp.include_router(recognize_router)
+     dp.include_router(callbacks_router)
+     dp.include_router(forum_router)
+     dp.include_router(search_router)  # Last: catches plain text
+
++    from bot.tasks import cleanup_loop
++    asyncio.create_task(cleanup_loop(bot))
++
+     logger.info("🤖 Bot starting...")
+     await dp.start_polling(bot)
+
+@@ -60,6 +78,14 @@ async def run_bot() -> None:
+ async def main() -> None:
+     """Run web + bot concurrently."""
+     logger.info("🚀 Starting Platform...")
++
++    # Initialize Database
++    try:
++        from app.db.database import init_db
++        await init_db()
++        logger.info("✅ Database initialized")
++    except Exception as e:
++        logger.error(f"❌ Database init failed: {e}")
+
+     await asyncio.gather(
+         run_web(),
+diff --git a/services/downloader.py b/services/downloader.py
+index 1478cdf..5f778e3 100644
+--- a/services/downloader.py
++++ b/services/downloader.py
+@@ -14,27 +14,53 @@ from services import vk_music as vk_service
+ logger = logging.getLogger(__name__)
+
+
++
++import asyncio
++import time
++from bot.handlers.admin import get_global_settings
++
++# Global lock and timestamp to enforce download delay
++_download_lock = asyncio.Lock()
++_last_download_time = 0.0
++
+ async def download_track(
+     track: TrackInfo,
+     quality: str = "mp3_320",
+ ) -> str | None:
+-    """Download a track from its source. Returns file path or None."""
++    """Download a track from its source. Returns file path or None. Enforces global delay."""
++    global _last_download_time
++
++    # Enforce delay but don't hold lock during download
++    async with _download_lock:
++        g_settings = await get_global_settings()
++        delay = g_settings.download_delay_sec
++        now = time.time()
++        elapsed = now - _last_download_time
++        if elapsed < delay:
++            wait_time = delay - elapsed
++            logger.info(f"Enforcing download delay, sleeping for {wait_time:.1f}s")
++            await asyncio.sleep(wait_time)
++
++        _last_download_time = time.time()
++
++    # Lock released, now download
+     if track.source == "youtube":
+         return await yt_service.download(track, quality)
+     elif track.source == "vk":
+         return await vk_service.download(track, quality)
+     elif track.source == "spotify":
+-        # Spotify doesn't allow direct download → search on YouTube and download
+         query = f"{track.artist} {track.title}"
+         yt_results = await yt_service.search(query, count=1)
+         if yt_results:
+             return await yt_service.download(yt_results[0], quality)
+         return None
+     else:
+-        logger.error("Unknown source: %s", track.source)
++        logger.warning(f"Unknown source: {track.source}")
+         return None
+
+
++
++
+ def cleanup_file(file_path: str) -> None:
+     """Remove a temporary file after sending."""
+     try:
