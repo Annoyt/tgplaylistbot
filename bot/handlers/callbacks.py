@@ -121,7 +121,7 @@ async def cb_download(callback: CallbackQuery) -> None:
             performer=track.artist,
             duration=track.duration,
             caption=caption_text,
-            message_thread_id=callback.message.message_thread_id
+
         )
 
         # Save to pending_tracks
@@ -233,11 +233,9 @@ async def cb_select_track(callback: CallbackQuery) -> None:
     track = tracks[track_idx]
 
     # Show track details and options
-    text = f"🎵 Выбран трек:\n<b>{track.artist} – {track.title}</b>\n\nВ какой топик отправить?"
+    text = f"🎵 Выбран трек:\n<b>{track.artist} – {track.title}</b>"
 
     from bot.keyboards.inline import track_detail_kb
     is_private = callback.message.chat.type == "private"
-    if is_private:
-        text = f"🎵 Выбран трек:\n<b>{track.artist} – {track.title}</b>"
     await callback.message.edit_text(text, reply_markup=track_detail_kb(track_idx, is_private=is_private), parse_mode="HTML")
     await callback.answer()
