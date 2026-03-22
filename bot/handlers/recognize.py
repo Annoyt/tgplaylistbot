@@ -197,7 +197,10 @@ async def handle_link(message: Message) -> None:
     try:
         audio_path = await yt_svc.download_from_url(url)
         if not audio_path:
-            await status.edit_text("❌ Не удалось скачать видео по этой ссылке.")
+            if "instagram.com" in url:
+                await status.edit_text("❌ Не удалось скачать Instagram Reels (Инстаграм блокирует скачивание без авторизации). Нужно прикрепить cookies к боту.")
+            else:
+                await status.edit_text("❌ Не удалось скачать видео по этой ссылке.")
             return
 
         await status.edit_text("🎧 Распознаю трек...")
