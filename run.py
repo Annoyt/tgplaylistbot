@@ -71,8 +71,33 @@ async def run_bot() -> None:
     from bot.tasks import cleanup_loop
     asyncio.create_task(cleanup_loop(bot))
 
+
     logger.info("🤖 Bot starting...")
+
+    # Broadcast startup message to users
+    try:
+        from app.db.database import get_db
+        db = await get_db()
+        try:
+            row = await db.execute("SELECT DISTINCT id as chat_id FROM users")
+            users = await row.fetchall()
+            for user in users:
+                try:
+                    await bot.send_message(
+                        chat_id=user["chat_id"],
+                        text="⚙️ Бот обновлён и перезапущен! Добавлены новые функции и исправлены ошибки."
+                    )
+                except Exception as send_err:
+                    pass
+        except Exception as query_err:
+            logger.error(f"Failed to query users for broadcast: {query_err}")
+        finally:
+            await db.close()
+    except Exception as e:
+        logger.error(f"Broadcast failed: {e}")
+
     await dp.start_polling(bot)
+
 
 
 async def main() -> None:
