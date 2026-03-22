@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, FSInputFile
 from bot.handlers.search import get_cached_tracks, sort_tracks, filter_lossless, _format_results
 from bot.keyboards.inline import search_results_kb, track_detail_kb, confirm_topic_kb
 from services.downloader import download_track, cleanup_file
+from services.cache import get_cached_file_id, save_cached_file_id
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -98,33 +99,55 @@ async def cb_download(callback: CallbackQuery) -> None:
     await callback.answer(f"⏳ Скачиваю {track.artist} – {track.title}...")
     status = await callback.message.answer(f"⏳ Скачиваю: {track.artist} – {track.title} ({quality})...")
 
+
     try:
-        file_path = await download_track(track, quality)
-        if not file_path or not os.path.exists(file_path):
-            await status.edit_text("❌ Не удалось скачать трек.")
-            return
-
-        file_size = os.path.getsize(file_path)
-        if file_size > 49 * 1024 * 1024:
-            await status.edit_text("❌ Файл слишком большой для Telegram (>50MB).")
-            cleanup_file(file_path)
-            return
-
-
         caption_text = f"{track.source_icon} {track.artist} – {track.title}\n👤 #{callback.from_user.id}"
         if callback.from_user.username:
             caption_text += f" (@{callback.from_user.username})"
 
-        audio_msg = await callback.message.answer_audio(
-            audio=FSInputFile(file_path),
-            title=track.title,
-            performer=track.artist,
-            duration=track.duration,
-            caption=caption_text,
+        # 1. Check Cache First
+        cached_file_id = await get_cached_file_id(track.artist, track.title)
+        audio_msg = None
+        file_path = None
 
-        )
+        if cached_file_id:
+            logger.info(f"Using cached file ID for {track.artist} - {track.title}")
+            try:
+                audio_msg = await callback.message.answer_audio(
+                    audio=cached_file_id,
+                    caption=caption_text,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send cached audio (maybe deleted?): {e}")
+                cached_file_id = None # Fallback to download
+
+        # 2. Download if not cached or cache sending failed
+        if not cached_file_id:
+            file_path = await download_track(track, quality)
+            if not file_path or not os.path.exists(file_path):
+                await status.edit_text("❌ Не удалось скачать трек.")
+                return
+
+            file_size = os.path.getsize(file_path)
+            if file_size > 49 * 1024 * 1024:
+                await status.edit_text("❌ Файл слишком большой для Telegram (>50MB).")
+                cleanup_file(file_path)
+                return
+
+            audio_msg = await callback.message.answer_audio(
+                audio=FSInputFile(file_path),
+                title=track.title,
+                performer=track.artist,
+                duration=track.duration,
+                caption=caption_text,
+            )
+
+            # Save file_id to cache for future requests
+            if audio_msg and audio_msg.audio:
+                await save_cached_file_id(track.artist, track.title, audio_msg.audio.file_id)
 
         # Save to pending_tracks
+
         if callback.message.chat.type != "private":
             from app.db.database import get_db
             import json

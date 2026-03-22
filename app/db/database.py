@@ -102,6 +102,24 @@ async def init_db() -> None:
                 emoji TEXT,
                 UNIQUE(msg_id, user_id)
             );
+
+            CREATE TABLE IF NOT EXISTS cached_tracks (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                artist_title_hash TEXT UNIQUE NOT NULL,
+                file_id         TEXT NOT NULL,
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS playlist_queue (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id         INTEGER NOT NULL,
+                user_id         INTEGER NOT NULL,
+                original_msg_id INTEGER,
+                track_json      TEXT NOT NULL,
+                status          TEXT DEFAULT 'pending',
+                created_at      TEXT DEFAULT (datetime('now'))
+            );
+
             CREATE TABLE IF NOT EXISTS topic_messages (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id         INTEGER NOT NULL,
