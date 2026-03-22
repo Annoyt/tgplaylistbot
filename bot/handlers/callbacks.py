@@ -121,7 +121,7 @@ async def cb_download(callback: CallbackQuery) -> None:
             performer=track.artist,
             duration=track.duration,
             caption=caption_text,
-            message_thread_id=callback.message.message_thread_id
+
         )
 
         # Save to pending_tracks
