@@ -47,6 +47,8 @@ async def download_track(
     if track.source == "youtube":
         return await yt_service.download(track, quality)
     elif track.source == "vk":
+        # Add to my audios as an anti-bot measure before downloading
+        await vk_service.add_track_to_my_audios(track)
         return await vk_service.download(track, quality)
     elif track.source == "spotify":
         query = f"{track.artist} {track.title}"

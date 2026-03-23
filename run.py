@@ -70,6 +70,8 @@ async def run_bot() -> None:
 
     from bot.tasks import cleanup_loop
     asyncio.create_task(cleanup_loop(bot))
+    from bot.tasks import playlist_queue_loop
+    asyncio.create_task(playlist_queue_loop(bot))
 
     logger.info("🤖 Bot starting...")
     await dp.start_polling(bot)

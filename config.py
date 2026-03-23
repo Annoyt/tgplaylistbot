@@ -24,6 +24,8 @@ class Settings(BaseSettings):
 
     # ── VK Music ──────────────────────────────────────
     vk_token: str = ""
+    vk_login: str = ""
+    vk_password: str = ""
 
     # ── Spotify ───────────────────────────────────────
     spotify_client_id: str = ""

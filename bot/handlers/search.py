@@ -118,3 +118,72 @@ def sort_tracks(tracks: list[TrackInfo], sort_by: str) -> list[TrackInfo]:
 def filter_lossless(tracks: list[TrackInfo]) -> list[TrackInfo]:
     """Filter to lossless tracks only."""
     return [t for t in tracks if t.is_lossless or t.bitrate >= 320]
+
+
+
+
+@router.message(F.text.regexp(r'https?://(?:m\.)?vk\.com/(?:music/playlist/|audio\?z=audio_playlist)(-?\d+)_(\d+)(?:(?:/|%2F|_)([a-zA-Z0-9]+))?'))
+async def vk_playlist_url(message: Message) -> None:
+    """Handle VK playlist URLs."""
+    text = message.text.strip()
+
+    # Extract owner_id, playlist_id, and access_key (if present)
+    import re
+    match = re.search(r'(?:music/playlist/|audio\?z=audio_playlist)(-?\d+)_(\d+)(?:(?:/|%2F|_)([a-zA-Z0-9]+))?', text)
+    if not match:
+        return
+
+    owner_id, playlist_id, access_key = match.groups()
+    access_key = access_key or ""
+
+    if getattr(message.chat, 'is_forum', False) and getattr(message, 'message_thread_id', None) is not None:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+    status_msg = await message.bot.send_message(
+        chat_id=message.chat.id,
+        text="⏳ Получаю список треков из плейлиста ВК...",
+        message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
+    )
+
+    try:
+        from services import vk_music as vk_svc
+        tracks = await vk_svc.get_playlist_tracks(owner_id, playlist_id, access_key)
+
+        if not tracks:
+            await status_msg.edit_text("❌ Не удалось получить треки. Плейлист пуст, закрыт или недоступен.")
+            return
+
+        # Add tracks to playlist_queue
+        from app.db.database import get_db
+        import json
+        from dataclasses import asdict
+
+        db = await get_db()
+        try:
+            user_id = message.from_user.id
+            orig_id = message.message_id
+
+            # Save session for original_msg_id if needed, but we can just use message.message_id
+
+            inserted = 0
+            for t in tracks:
+                await db.execute(
+                    "INSERT INTO playlist_queue (chat_id, user_id, original_msg_id, track_json) VALUES (?, ?, ?, ?)",
+                    (message.chat.id, user_id, orig_id, json.dumps(asdict(t)))
+                )
+                inserted += 1
+
+            await db.commit()
+            await status_msg.edit_text(f"✅ Найдено {inserted} треков в плейлисте. Добавлено в фоновую очередь загрузки.\nБот будет скачивать их постепенно (с паузами), чтобы избежать блокировки.")
+        except Exception as e:
+            logger.error(f"Failed to save playlist queue: {e}")
+            await status_msg.edit_text("❌ Ошибка при добавлении в очередь.")
+        finally:
+            await db.close()
+
+    except Exception as e:
+        logger.error(f"Playlist extraction failed: {e}")
+        await status_msg.edit_text("❌ Произошла ошибка при получении плейлиста.")
