@@ -29,3 +29,5 @@ AI_AGENT_ARCHITECTURE.md
 docs/
 mkdocs.yml
 serve-docs.sh
+data/
+*.db
