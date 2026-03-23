@@ -75,7 +75,10 @@ async def save_musicbot_settings(request: Request, user: dict = Depends(get_curr
         for key in [
             "telegram_bot_token",
             "vk_token",
+            "vk_login",
+            "vk_password",
             "spotify_client_id",
+
             "spotify_client_secret",
             "acoustid_api_key",
             "default_quality",

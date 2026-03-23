@@ -25,6 +25,24 @@
                 </div>
                 <small id="tg_token_status" class="help-text"></small>
             </div>
+                        <div class="form-group">
+                <label for="vk_login">VK Login (Email или Телефон)</label>
+                <div class="input-secret">
+                    <input type="text" id="vk_login" name="vk_login"
+                        value="{{ bot_settings.get('vk_login', '') }}" placeholder="example@mail.com или +7999...">
+                </div>
+                <small class="help-text">Используйте почту или телефон для получения музыки в 320 kbps.</small>
+            </div>
+
+            <div class="form-group">
+                <label for="vk_password">VK Password</label>
+                <div class="input-secret">
+                    <input type="password" id="vk_password" name="vk_password"
+                        value="{{ bot_settings.get('vk_password', '') }}">
+                    <button type="button" class="btn-eye" onclick="toggleSecret(this)">👁</button>
+                </div>
+            </div>
+
             <div class="form-group">
                 <label for="vk_token">VK User Token</label>
                 <div class="input-secret">
