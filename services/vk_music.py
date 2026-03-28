@@ -14,23 +14,17 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 async def _get_vk_creds():
-    """Get VK credentials from settings table."""
+    """Get VK credentials from bot_settings table."""
     from app.db.database import get_db
     creds = {"login": settings.vk_login, "password": settings.vk_password, "token": settings.vk_token}
     try:
         db = await get_db()
-        # Ensure vk_token column exists (auto-migration)
-        try:
-            await db.execute("ALTER TABLE settings ADD COLUMN vk_token TEXT")
-            await db.commit()
-        except: pass
-
-        row = await db.execute("SELECT * FROM settings LIMIT 1")
-        res = await row.fetchone()
-        if res:
-            if res.get("vk_login"): creds["login"] = res["vk_login"]
-            if res.get("vk_password"): creds["password"] = res["vk_password"]
-            if res.get("vk_token"): creds["token"] = res["vk_token"]
+        # Ensure we are using the correct table schema (key-value based)
+        rows = await db.execute("SELECT key, value FROM bot_settings WHERE key IN ('vk_login', 'vk_password', 'vk_token')")
+        for row in await rows.fetchall():
+            if row["value"]:
+                k = row["key"].replace('vk_', '')
+                creds[k] = row["value"]
     except Exception as e:
         logger.error(f"Failed to fetch VK creds from DB: {e}")
     return creds
