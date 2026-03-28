@@ -208,8 +208,15 @@ async def download(
                 vk_audio = await loop.run_in_executor(None, _init_vk_audio, creds, captcha_handler)
                 if vk_audio:
                     def _get_url():
-                        res = vk_audio.get_audio_by_id(owner_id, audio_id)
-                        return list(res)[0].get("url") if res else None
+                        # Use direct API instead of fragile get_audio_by_id
+                        try:
+                            res = vk_audio._vk.method("audio.getById", {
+                                "audios": f"{owner_id}_{audio_id}"
+                            })
+                            return res[0].get("url") if res else None
+                        except Exception as e:
+                            logger.error(f"VK direct URL resolution failed: {e}")
+                            return None
                     resolved_url = await loop.run_in_executor(None, _get_url)
                     if resolved_url:
                         dl_url = resolved_url
