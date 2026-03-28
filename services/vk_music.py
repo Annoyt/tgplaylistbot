@@ -86,7 +86,13 @@ async def search(query: str, count: int = 30, captcha_handler=None) -> list[Trac
 
         def _direct_search():
             # Use direct API method instead of VkAudio.search which is broken
-            res = vk_audio._vk.method("audio.search", {"q": query, "count": count})
+            # Added sort=2 (by popularity) and autocomplete=1
+            res = vk_audio._vk.method("audio.search", {
+                "q": query, 
+                "count": count,
+                "sort": 2,
+                "autocomplete": 1
+            })
             return res.get("items", [])
 
         results = await loop.run_in_executor(None, _direct_search)

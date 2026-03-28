@@ -76,11 +76,14 @@ async def text_search(message: Message) -> None:
 
         results = await asyncio.gather(yt_task, vk_task, sp_task, return_exceptions=True)
 
-        all_tracks: list[TrackInfo] = []
+        yt_res = results[0] if isinstance(results[0], list) else []
+        vk_res = results[1] if isinstance(results[1], list) else []
+        sp_res = results[2] if isinstance(results[2], list) else []
+
+        all_tracks: list[TrackInfo] = vk_res + sp_res + yt_res
+
         for r in results:
-            if isinstance(r, list):
-                all_tracks.extend(r)
-            elif isinstance(r, Exception):
+            if isinstance(r, Exception):
                 logger.warning("Search error: %s", r)
 
         if not all_tracks:
