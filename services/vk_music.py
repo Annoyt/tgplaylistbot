@@ -38,18 +38,23 @@ async def _get_vk_creds():
 def _init_vk_audio(creds: dict, captcha_handler=None):
     """Initialize VK audio session (blocking, run in executor)."""
     import vk_api
+    from vk_api.audio import VkAudio
 
     try:
         login = creds.get("login")
         password = creds.get("password")
         token = creds.get("token")
 
+        if not token and not (login and password):
+            logger.warning("VK Audio: No credentials found in settings.")
+            return None
+
         # Prioritize token over login/password
         if token:
-            logger.info("Initializing VK session via token...")
+            logger.info("VK Audio: Initializing session via TOKEN...")
             session = vk_api.VkApi(token=token, captcha_handler=captcha_handler)
         elif login and password:
-            logger.info("Initializing VK session via login/password...")
+            logger.info(f"VK Audio: Initializing session via LOGIN ({login[:3]}***)...")
             # Use Kate Mobile app_id for better music access
             session = vk_api.VkApi(
                 login=login,
@@ -58,15 +63,19 @@ def _init_vk_audio(creds: dict, captcha_handler=None):
                 client_secret="lYp6pS1pgaY9w6raRrEP",
                 captcha_handler=captcha_handler
             )
-            session.auth(token_only=True)
-        else:
-            logger.warning("No VK credentials provided.")
-            return None
+            try:
+                session.auth(token_only=True)
+                logger.info("VK Audio: Auth SUCCESSFUL.")
+            except Exception as auth_err:
+                logger.error(f"VK Audio: Auth FAILED: {auth_err}")
+                raise
 
-        from vk_api.audio import VkAudio
-        return VkAudio(session)
+        vk_audio = VkAudio(session)
+        logger.info("VK Audio: VkAudio object created successfully.")
+        return vk_audio
+
     except Exception as e:
-        logger.error("VK Audio init failed: %s", e)
+        logger.error(f"VK Audio: CRITICAL INIT ERROR: {e}", exc_info=True)
         return None
 
 async def search(query: str, count: int = 30, captcha_handler=None) -> list[TrackInfo]:
