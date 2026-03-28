@@ -103,7 +103,7 @@ async def search(query: str, count: int = 30, captcha_handler=None) -> list[Trac
             )
         return tracks
     except Exception as e:
-        logger.error("VK search failed: %s", e)
+        logger.error("VK search failed: %s", e, exc_info=True)
         return []
 
 async def add_track_to_my_audios(track: TrackInfo, captcha_handler=None) -> bool:
