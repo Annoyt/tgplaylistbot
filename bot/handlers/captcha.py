@@ -7,7 +7,7 @@ from services.vk_captcha import captcha_manager
 
 router = Router()
 
-@router.message(F.text & ~F.text.startswith("/"))
+@router.message(F.text & ~F.text.startswith("/"), lambda m: m.from_user.id in captcha_manager.active_sessions)
 async def handle_captcha_reply(message: Message):
     """
     Check if the user is currently in a captcha session.
