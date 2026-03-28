@@ -104,6 +104,7 @@ async def search(query: str, count: int = 30, captcha_handler=None) -> list[Trac
                     filesize=0,
                 )
             )
+        logger.info(f"VK search for '{query}' found {len(tracks)} tracks.")
         return tracks
     except Exception as e:
         logger.error("VK search failed: %s", e, exc_info=True)
