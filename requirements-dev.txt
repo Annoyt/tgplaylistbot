@@ -1,0 +1,13 @@
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.3
+pytest-mock==3.14.0
+httpx==0.28.1
+
+# Linting & Formatting
+ruff==0.9.1
+mypy==1.14.1
+
+# Type Stubs
+types-requests==2.32.0.20241016
+types-PyJWT==1.7.1

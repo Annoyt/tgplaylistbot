@@ -8,10 +8,10 @@ import os
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, FSInputFile
 
-from bot.handlers.search import get_cached_tracks, sort_tracks, filter_lossless, _format_results
-from bot.keyboards.inline import search_results_kb, track_detail_kb, confirm_topic_kb
-from services.downloader import download_track, cleanup_file
+from bot.handlers.search import _format_results, filter_lossless, get_cached_tracks, sort_tracks
+from bot.keyboards.inline import search_results_kb, track_detail_kb
 from services.cache import get_cached_file_id, save_cached_file_id
+from services.downloader import cleanup_file, download_track
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -26,7 +26,6 @@ async def cb_page(callback: CallbackQuery) -> None:
     lossless = bool(int(parts[3])) if len(parts) > 3 else False
 
     user_id = callback.from_user.id
-    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
     if not tracks:
         await callback.answer("Результаты устарели, выполни поиск снова.")
@@ -54,7 +53,6 @@ async def cb_filter(callback: CallbackQuery) -> None:
     page = int(parts[3]) if len(parts) > 3 else 1
 
     user_id = callback.from_user.id
-    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
     if not tracks:
         await callback.answer("Результаты устарели.")
@@ -88,7 +86,6 @@ async def cb_download(callback: CallbackQuery) -> None:
     quality = parts[2]
 
     user_id = callback.from_user.id
-    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
 
     if track_idx < 0 or track_idx >= len(tracks):
@@ -123,7 +120,13 @@ async def cb_download(callback: CallbackQuery) -> None:
 
         # 2. Download if not cached or cache sending failed
         if not cached_file_id:
-            file_path = await download_track(track, quality)
+            file_path = await download_track(
+                track, 
+                quality,
+                bot=callback.message.bot,
+                chat_id=callback.message.chat.id,
+                user_id=callback.from_user.id
+            )
             if not file_path or not os.path.exists(file_path):
                 await status.edit_text("❌ Не удалось скачать трек.")
                 return
@@ -149,9 +152,10 @@ async def cb_download(callback: CallbackQuery) -> None:
         # Save to pending_tracks
 
         if callback.message.chat.type != "private":
-            from app.db.database import get_db
             import json
             from dataclasses import asdict
+
+            from app.db.database import get_db
             db = await get_db()
             try:
                 # We need to save the search message ID to delete it later
@@ -195,7 +199,6 @@ async def cb_download(callback: CallbackQuery) -> None:
 async def cb_back(callback: CallbackQuery) -> None:
     """Back to search results."""
     user_id = callback.from_user.id
-    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
     if tracks:
         text = _format_results(tracks, 1, 10, len(tracks))
@@ -213,7 +216,6 @@ async def cb_playlist(callback: CallbackQuery) -> None:
 
     if emoji == "new":
         # We need state to save track_idx
-        from aiogram.fsm.context import FSMContext
 
         # We will dispatch to FSM by modifying the handler signature slightly,
         # but aiogram automatically injects state if it's in the signature.
@@ -246,7 +248,6 @@ async def cb_select_track(callback: CallbackQuery) -> None:
     track_idx = int(parts[1])
 
     user_id = callback.from_user.id
-    from bot.handlers.search import get_cached_tracks
     tracks = get_cached_tracks(user_id)
 
     if track_idx < 0 or track_idx >= len(tracks):
@@ -258,7 +259,6 @@ async def cb_select_track(callback: CallbackQuery) -> None:
     # Show track details and options
     text = f"🎵 Выбран трек:\n<b>{track.artist} – {track.title}</b>"
 
-    from bot.keyboards.inline import track_detail_kb
     is_private = callback.message.chat.type == "private"
     await callback.message.edit_text(text, reply_markup=track_detail_kb(track_idx, is_private=is_private), parse_mode="HTML")
     await callback.answer()

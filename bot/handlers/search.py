@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections import OrderedDict
-from typing import Any
 
 from aiogram import F, Router
 from aiogram.types import Message
 
 from app.db.models import TrackInfo
 from bot.keyboards.inline import search_results_kb
-from services import youtube as yt_svc, vk_music as vk_svc, spotify as sp_svc
+from services import spotify as sp_svc
+from services import vk_music as vk_svc
+from services import youtube as yt_svc
+from services.vk_captcha import captcha_manager
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -64,8 +65,13 @@ async def text_search(message: Message) -> None:
 
     try:
         # Parallel search
+        c_handler = captcha_manager.get_captcha_handler(
+            message.bot, 
+            message.chat.id, 
+            message.from_user.id
+        )
         yt_task = yt_svc.search(query, count=30)
-        vk_task = vk_svc.search(query, count=30)
+        vk_task = vk_svc.search(query, count=30, captcha_handler=c_handler)
         sp_task = sp_svc.search(query, count=30)
 
         results = await asyncio.gather(yt_task, vk_task, sp_task, return_exceptions=True)
@@ -157,9 +163,10 @@ async def vk_playlist_url(message: Message) -> None:
             return
 
         # Add tracks to playlist_queue
-        from app.db.database import get_db
         import json
         from dataclasses import asdict
+
+        from app.db.database import get_db
 
         db = await get_db()
         try:

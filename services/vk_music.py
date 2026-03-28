@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from pathlib import Path
 
 import httpx
@@ -28,7 +27,7 @@ async def _get_vk_creds():
         logger.error(f"Failed to fetch VK creds from DB: {e}")
     return creds
 
-def _init_vk_audio(creds: dict):
+def _init_vk_audio(creds: dict, captcha_handler=None):
     """Initialize VK audio session (blocking, run in executor)."""
     import vk_api
 
@@ -37,13 +36,21 @@ def _init_vk_audio(creds: dict):
         password = creds.get("password")
         token = creds.get("token")
 
-        if login and password:
-            logger.info("Initializing VK session via login/password...")
-            session = vk_api.VkApi(login=login, password=password)
-            session.auth(token_only=True)
-        elif token:
+        # Prioritize token over login/password
+        if token:
             logger.info("Initializing VK session via token...")
-            session = vk_api.VkApi(token=token)
+            session = vk_api.VkApi(token=token, captcha_handler=captcha_handler)
+        elif login and password:
+            logger.info("Initializing VK session via login/password...")
+            # Use Kate Mobile app_id for better music access
+            session = vk_api.VkApi(
+                login=login,
+                password=password,
+                app_id=2685278,
+                client_secret="lYp6pS1pgaY9w6raRrEP",
+                captcha_handler=captcha_handler
+            )
+            session.auth(token_only=True)
         else:
             logger.warning("No VK credentials provided.")
             return None
@@ -54,7 +61,7 @@ def _init_vk_audio(creds: dict):
         logger.error("VK Audio init failed: %s", e)
         return None
 
-async def search(query: str, count: int = 30) -> list[TrackInfo]:
+async def search(query: str, count: int = 30, captcha_handler=None) -> list[TrackInfo]:
     """Search VK for audio tracks."""
     creds = await _get_vk_creds()
     if not creds.get("token") and not (creds.get("login") and creds.get("password")):
@@ -62,7 +69,7 @@ async def search(query: str, count: int = 30) -> list[TrackInfo]:
 
     loop = asyncio.get_event_loop()
     try:
-        vk_audio = await loop.run_in_executor(None, _init_vk_audio, creds)
+        vk_audio = await loop.run_in_executor(None, _init_vk_audio, creds, captcha_handler)
         if vk_audio is None:
             return []
 
@@ -88,7 +95,7 @@ async def search(query: str, count: int = 30) -> list[TrackInfo]:
         logger.error("VK search failed: %s", e)
         return []
 
-async def add_track_to_my_audios(track: TrackInfo) -> bool:
+async def add_track_to_my_audios(track: TrackInfo, captcha_handler=None) -> bool:
     """Add track to VK audios to mimic human behavior."""
     if not track.source_id or "audio" not in track.source_id:
         return False
@@ -104,7 +111,7 @@ async def add_track_to_my_audios(track: TrackInfo) -> bool:
     creds = await _get_vk_creds()
     loop = asyncio.get_event_loop()
     try:
-        vk_audio = await loop.run_in_executor(None, _init_vk_audio, creds)
+        vk_audio = await loop.run_in_executor(None, _init_vk_audio, creds, captcha_handler)
         if vk_audio is None:
             return False
 
@@ -121,12 +128,12 @@ async def add_track_to_my_audios(track: TrackInfo) -> bool:
         logger.error(f"Failed to add track to VK audios: {e}")
         return False
 
-async def get_playlist_tracks(owner_id: str, playlist_id: str, access_key: str = "") -> list[TrackInfo]:
+async def get_playlist_tracks(owner_id: str, playlist_id: str, access_key: str = "", captcha_handler=None) -> list[TrackInfo]:
     """Fetch tracks from a VK playlist."""
     creds = await _get_vk_creds()
     loop = asyncio.get_event_loop()
     try:
-        vk_audio = await loop.run_in_executor(None, _init_vk_audio, creds)
+        vk_audio = await loop.run_in_executor(None, _init_vk_audio, creds, captcha_handler)
         if vk_audio is None:
             return []
 
@@ -157,6 +164,7 @@ async def download(
     track: TrackInfo,
     quality: str = "mp3_320",
     download_dir: Path | None = None,
+    captcha_handler=None,
 ) -> str | None:
     """Download audio from VK direct URL."""
     if not track.source_id:
@@ -172,7 +180,7 @@ async def download(
             owner_id, audio_id = match.groups()
             loop = asyncio.get_event_loop()
             try:
-                vk_audio = await loop.run_in_executor(None, _init_vk_audio, creds)
+                vk_audio = await loop.run_in_executor(None, _init_vk_audio, creds, captcha_handler)
                 if vk_audio:
                     def _get_url():
                         res = vk_audio.get_audio_by_id(owner_id, audio_id)

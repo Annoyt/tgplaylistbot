@@ -11,10 +11,12 @@ import tempfile
 from aiogram import F, Router
 from aiogram.types import Message
 
-from config import settings
-from services import recognizer, youtube as yt_svc
-from bot.handlers.search import _search_cache, _format_results
+from bot.handlers.search import _format_results, _search_cache
 from bot.keyboards.inline import search_results_kb
+from config import settings
+from services import recognizer
+from services import youtube as yt_svc
+from services.vk_captcha import captcha_manager
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -62,10 +64,16 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
         )
 
         # Search for full version
+        c_handler = captcha_manager.get_captcha_handler(
+            message.bot, 
+            message.chat.id, 
+            message.from_user.id
+        )
         query = f"{result.artist} {result.title}"
         yt_task = yt_svc.search(query, count=30)
-        from services import vk_music as vk_svc, spotify as sp_svc
-        vk_task = vk_svc.search(query, count=30)
+        from services import spotify as sp_svc
+        from services import vk_music as vk_svc
+        vk_task = vk_svc.search(query, count=30, captcha_handler=c_handler)
         sp_task = sp_svc.search(query, count=30)
 
         results = await asyncio.gather(yt_task, vk_task, sp_task, return_exceptions=True)
@@ -81,9 +89,10 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
         user_id = message.from_user.id
         _search_cache[user_id] = all_tracks
 
-        import uuid
         import json
+        import uuid
         from dataclasses import asdict
+
         from app.db.database import get_db
         session_id = str(uuid.uuid4())
 

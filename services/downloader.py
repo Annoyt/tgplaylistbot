@@ -4,20 +4,17 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
+import asyncio
+import time
 
 from app.db.models import TrackInfo
 from config import settings
 from services import youtube as yt_service
 from services import vk_music as vk_service
+from services.vk_captcha import captcha_manager
+from bot.handlers.admin import get_global_settings
 
 logger = logging.getLogger(__name__)
-
-
-
-import asyncio
-import time
-from bot.handlers.admin import get_global_settings
 
 # Global lock and timestamp to enforce download delay
 _download_lock = asyncio.Lock()
@@ -26,6 +23,9 @@ _last_download_time = 0.0
 async def download_track(
     track: TrackInfo,
     quality: str = "mp3_320",
+    bot=None,
+    chat_id: int = 0,
+    user_id: int = 0,
 ) -> str | None:
     """Download a track from its source. Returns file path or None. Enforces global delay."""
     global _last_download_time
@@ -47,9 +47,14 @@ async def download_track(
     if track.source == "youtube":
         return await yt_service.download(track, quality)
     elif track.source == "vk":
+        # Create captcha handler if bot info is provided
+        c_handler = None
+        if bot and chat_id and user_id:
+            c_handler = captcha_manager.get_captcha_handler(bot, chat_id, user_id)
+            
         # Add to my audios as an anti-bot measure before downloading
-        await vk_service.add_track_to_my_audios(track)
-        return await vk_service.download(track, quality)
+        await vk_service.add_track_to_my_audios(track, captcha_handler=c_handler)
+        return await vk_service.download(track, quality, captcha_handler=c_handler)
     elif track.source == "spotify":
         query = f"{track.artist} {track.title}"
         yt_results = await yt_service.search(query, count=1)
@@ -82,5 +87,5 @@ def cleanup_download_dir() -> None:
         if f.is_file():
             try:
                 f.unlink()
-            except OSError:
+            except Exception:
                 pass

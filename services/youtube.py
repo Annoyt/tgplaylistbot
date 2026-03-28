@@ -122,8 +122,10 @@ async def download_from_url(url: str, download_dir: Path | None = None) -> str |
         "--audio-quality", "0",
         "-o", output_template,
         "--max-filesize", f"{settings.max_file_size_mb}m",
-        url,
     ]
+    if os.path.exists("cookies.txt"):
+        cmd.extend(["--cookies", "cookies.txt"])
+    cmd.append(url)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,

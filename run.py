@@ -2,25 +2,24 @@
 
 import asyncio
 import logging
+from pathlib import Path
 
 import uvicorn
 from aiogram import Bot, Dispatcher
 
-from config import settings
 from app.main import app as fastapi_app
+from bot.handlers.admin import router as admin_router
+from bot.handlers.callbacks import router as callbacks_router
+from bot.handlers.captcha import router as captcha_router
+from bot.handlers.forum import router as forum_router
+from bot.handlers.onboarding import router as onboarding_router
+from bot.handlers.recognize import router as recognize_router
+from bot.handlers.search import router as search_router
+from bot.handlers.settings import router as settings_router
 
 # Bot handlers
 from bot.handlers.start import router as start_router
-from bot.handlers.search import router as search_router
-from bot.handlers.recognize import router as recognize_router
-from bot.handlers.callbacks import router as callbacks_router
-from bot.handlers.forum import router as forum_router
-from bot.handlers.settings import router as settings_router
-from bot.handlers.admin import router as admin_router
-from bot.handlers.onboarding import router as onboarding_router
-
-import os
-from pathlib import Path
+from config import settings
 
 log_dir = Path("data")
 log_dir.mkdir(exist_ok=True)
@@ -61,6 +60,7 @@ async def run_bot() -> None:
     # Register routers (order matters: specific first)
     dp.include_router(start_router)
     dp.include_router(onboarding_router)
+    dp.include_router(captcha_router) # Before search to catch answers
     dp.include_router(settings_router)
     dp.include_router(admin_router)
     dp.include_router(recognize_router)
