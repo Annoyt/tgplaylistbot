@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     download_dir: str = "/tmp/musicbot"
 
     # ── Database ──────────────────────────────────────
-    database_url: str = "sqlite+aiosqlite:///data/bot.db"
+    database_url: str = "sqlite+aiosqlite:////app/data/bot.db"
 
     @property
     def db_path(self) -> Path:
