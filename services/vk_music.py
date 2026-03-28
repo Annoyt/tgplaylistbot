@@ -84,9 +84,12 @@ async def search(query: str, count: int = 30, captcha_handler=None) -> list[Trac
         if vk_audio is None:
             return []
 
-        results = await loop.run_in_executor(
-            None, lambda: list(vk_audio.search(q=query, count=count))
-        )
+        def _direct_search():
+            # Use direct API method instead of VkAudio.search which is broken
+            res = vk_audio._vk.method("audio.search", {"q": query, "count": count})
+            return res.get("items", [])
+
+        results = await loop.run_in_executor(None, _direct_search)
 
         tracks: list[TrackInfo] = []
         for item in results:
@@ -149,7 +152,18 @@ async def get_playlist_tracks(owner_id: str, playlist_id: str, access_key: str =
             return []
 
         def _get_tracks():
-            return list(vk_audio.get_iter(owner_id=int(owner_id), album_id=int(playlist_id), access_hash=access_key))
+            # Use direct API method instead of VkAudio.get_iter which can also be fragile
+            params = {
+                "owner_id": int(owner_id),
+                "count": 200,
+            }
+            if playlist_id and int(playlist_id) != 0:
+                params["album_id"] = int(playlist_id)
+            if access_key:
+                params["access_key"] = access_key
+            
+            res = vk_audio._vk.method("audio.get", params)
+            return res.get("items", [])
 
         results = await loop.run_in_executor(None, _get_tracks)
 
