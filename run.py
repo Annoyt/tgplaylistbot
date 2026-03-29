@@ -16,6 +16,7 @@ from bot.handlers.onboarding import router as onboarding_router
 from bot.handlers.recognize import router as recognize_router
 from bot.handlers.search import router as search_router
 from bot.handlers.settings import router as settings_router
+from bot.handlers.auth import router as auth_router
 
 # Bot handlers
 from bot.handlers.start import router as start_router
@@ -66,6 +67,7 @@ async def run_bot() -> None:
     dp.include_router(recognize_router)
     dp.include_router(callbacks_router)
     dp.include_router(forum_router)
+    dp.include_router(auth_router)  # Handles OAuth links
     dp.include_router(search_router)  # Last: catches plain text
 
     from bot.tasks import cleanup_loop

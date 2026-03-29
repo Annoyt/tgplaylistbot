@@ -29,6 +29,8 @@ async def _get_vk_creds():
         logger.error(f"Failed to fetch VK creds from DB: {e}")
     return creds
 
+OFFICIAL_UA = "VKAndroidApp/8.53-15779 (Android 13; SDK 33; arm64-v8a; Xiaomi Redmi Note 11; ru; 2400x1080)"
+
 def _init_vk_audio(creds: dict, captcha_handler=None):
     """Initialize VK audio session (blocking, run in executor)."""
     import vk_api
@@ -49,12 +51,11 @@ def _init_vk_audio(creds: dict, captcha_handler=None):
             session = vk_api.VkApi(token=token, captcha_handler=captcha_handler)
         elif login and password:
             logger.info(f"VK Audio: Initializing session via LOGIN ({login[:3]}***)...")
-            # Use Kate Mobile app_id for better music access
+            # Use Kate Mobile app_id (2274003) for better music access
             session = vk_api.VkApi(
                 login=login,
                 password=password,
-                app_id=2685278,
-                client_secret="lYp6pS1pgaY9w6raRrEP",
+                app_id=2274003,
                 captcha_handler=captcha_handler
             )
             try:
@@ -63,6 +64,9 @@ def _init_vk_audio(creds: dict, captcha_handler=None):
             except Exception as auth_err:
                 logger.error(f"VK Audio: Auth FAILED: {auth_err}")
                 raise
+
+        # Inject official User-Agent into the session
+        session.http.headers.update({"User-Agent": OFFICIAL_UA})
 
         vk_audio = VkAudio(session)
         logger.info("VK Audio: VkAudio object created successfully.")
