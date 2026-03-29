@@ -16,16 +16,17 @@ def _normalize_name(name: str) -> str:
     n = re.sub(r'\s+', ' ', n).strip() # normalize spaces
     return n
 
-def generate_track_hash(artist: str, title: str) -> str:
-    """Generate a normalized hash string for a track."""
+def generate_track_hash(artist: str, title: str, duration: int = 0) -> str:
+    """Generate a normalized hash string for a track including its duration."""
     norm_artist = _normalize_name(artist)
     norm_title = _normalize_name(title)
-    return f"{norm_artist}_{norm_title}"
+    # Include duration to distinguish between versions (Live, Radio Edit, etc.)
+    return f"{norm_artist}_{norm_title}_{duration}"
 
-async def get_cached_file_id(artist: str, title: str) -> str | None:
+async def get_cached_file_id(artist: str, title: str, duration: int = 0) -> str | None:
     """Retrieve Telegram file_id from cache if available."""
-    track_hash = generate_track_hash(artist, title)
-    if not track_hash or track_hash == "_":
+    track_hash = generate_track_hash(artist, title, duration)
+    if not track_hash or track_hash == "__0":
         return None
 
     try:
@@ -40,10 +41,10 @@ async def get_cached_file_id(artist: str, title: str) -> str | None:
         logger.error(f"Cache lookup failed for '{track_hash}': {e}")
     return None
 
-async def save_cached_file_id(artist: str, title: str, file_id: str) -> bool:
+async def save_cached_file_id(artist: str, title: str, duration: int, file_id: str) -> bool:
     """Save Telegram file_id to cache."""
-    track_hash = generate_track_hash(artist, title)
-    if not track_hash or track_hash == "_":
+    track_hash = generate_track_hash(artist, title, duration)
+    if not track_hash or track_hash == "__0":
         return False
 
     try:

@@ -115,11 +115,21 @@ async def download_from_url(url: str, download_dir: Path | None = None) -> str |
 
     uid = uuid.uuid4().hex
     output_template = str(dl_dir / f"{uid}.%(ext)s")
+    
+    # Official VK User-Agent for better segment access
+    from services.vk_music import OFFICIAL_UA
+
     cmd = [
         "yt-dlp",
         "-x",
         "--audio-format", "mp3",
         "--audio-quality", "0",
+        "--user-agent", OFFICIAL_UA,
+        "--hls-prefer-native",
+        "--fragment-retries", "10",
+        "--retries", "3",
+        "--no-part",
+        "--fixup", "detect_or_warn",
         "-o", output_template,
         "--max-filesize", f"{settings.max_file_size_mb}m",
     ]
@@ -134,10 +144,11 @@ async def download_from_url(url: str, download_dir: Path | None = None) -> str |
     _, stderr = await proc.communicate()
 
     if proc.returncode != 0:
-        logger.error("yt-dlp URL download failed: %s", stderr.decode())
+        logger.error("yt-dlp URL download failed: %s", stderr.decode()[-500:])
         return None
 
     out_file = dl_dir / f"{uid}.mp3"
     if out_file.exists() and out_file.stat().st_size > 0:
         return str(out_file)
     return None
+

@@ -24,6 +24,7 @@ aiogram==3.17.0
 vk-api==11.9.9
 spotipy==2.24.0
 yt-dlp==2025.3.31
+m3u8==6.0.0
 
 # Audio Recognition
 shazamio==0.8.1

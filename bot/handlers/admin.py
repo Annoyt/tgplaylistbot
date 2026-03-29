@@ -143,3 +143,30 @@ async def cmd_set_global(message: Message) -> None:
 
     await update_global_setting(key, value)
     await message.answer(f"✅ Настройка `{key}` изменена на `{value}`", parse_mode="Markdown")
+
+
+@router.message(Command("clear_cache"))
+async def cmd_clear_cache(message: Message) -> None:
+    """Clear the cached_tracks table."""
+    db = await get_db()
+    is_admin = False
+    try:
+        row = await db.execute("SELECT is_admin FROM users WHERE id = ?", (message.from_user.id,))
+        res = await row.fetchone()
+        if res and res["is_admin"] == 1:
+            is_admin = True
+    finally:
+        await db.close()
+
+    if not is_admin:
+        return
+
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM cached_tracks")
+        await db.commit()
+        await message.answer("♻️ **Кеш поиска очищен.** Теперь все треки будут скачиваться заново с применением последних исправлений.", parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при очистке кеша: {e}")
+    finally:
+        await db.close()

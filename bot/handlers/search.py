@@ -80,7 +80,24 @@ async def text_search(message: Message) -> None:
         vk_res = results[1] if isinstance(results[1], list) else []
         sp_res = results[2] if isinstance(results[2], list) else []
 
-        all_tracks: list[TrackInfo] = vk_res + sp_res + yt_res
+        platform_res = {
+            "youtube": yt_res,
+            "vk": vk_res,
+            "spotify": sp_res
+        }
+
+        from app.db.database import get_db
+        db = await get_db()
+        try:
+            row = await db.execute("SELECT platform_priority FROM user_settings WHERE user_id = ?", (message.from_user.id,))
+            data = await row.fetchone()
+            platforms = [p.strip() for p in data["platform_priority"].split(",")] if data else ["youtube", "vk", "spotify"]
+        finally:
+            await db.close()
+
+        all_tracks: list[TrackInfo] = []
+        for p in platforms:
+            all_tracks.extend(platform_res.get(p, []))
 
         for r in results:
             if isinstance(r, Exception):
@@ -90,16 +107,16 @@ async def text_search(message: Message) -> None:
             await status_msg.edit_text("😔 Ничего не найдено")
             return
 
-        # Cache results (evict oldest if over limit)
+        # Sort and Cache results (evict oldest if over limit)
+        all_tracks = sort_tracks(all_tracks, "")
         user_id = message.from_user.id
         _search_cache[user_id] = all_tracks
         if len(_search_cache) > _MAX_CACHE:
             _search_cache.popitem(last=False)
-
-        # Display first page
         per_page = 10
+        artist_name = all_tracks[0].artist if all_tracks else None
         text = _format_results(all_tracks, page=1, per_page=per_page, total=len(all_tracks))
-        kb = search_results_kb(all_tracks, page=1, total=len(all_tracks), per_page=per_page)
+        kb = search_results_kb(all_tracks, page=1, total=len(all_tracks), per_page=per_page, artist_name=artist_name)
 
         await status_msg.edit_text(text, reply_markup=kb)
 
@@ -121,7 +138,21 @@ def sort_tracks(tracks: list[TrackInfo], sort_by: str) -> list[TrackInfo]:
         return sorted(tracks, key=lambda t: t.bitrate)
     elif sort_by in ("title", "asc"):
         return sorted(tracks, key=lambda t: t.title.lower())
-    return tracks
+    
+    def default_sort_key(t: TrackInfo):
+        # Primary: Duration (ascending)
+        # Secondary: Estimated or real size (descending)
+        # We calculate an effective size in MB for sorting
+        if t.filesize > 0:
+            eff_size = t.filesize
+        else:
+            # Estimate: YouTube tracks are usually around 128-160kbps
+            # 160 kbps = 20 KB/s
+            eff_size = t.duration * 20 * 1024
+            
+        return (t.duration, -eff_size)
+
+    return sorted(tracks, key=default_sort_key)
 
 
 def filter_lossless(tracks: list[TrackInfo]) -> list[TrackInfo]:

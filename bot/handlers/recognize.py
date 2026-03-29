@@ -58,8 +58,7 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
             return
 
         await status.edit_text(
-            f"🎵 <b>Найден:</b> {result.artist} – {result.title}\n"
-            f"🔍 Ищу полную версию...",
+            f"✅ <b>Распознан трек:</b> {result.artist} – {result.title}",
             parse_mode="HTML",
         )
 
@@ -69,7 +68,8 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
             message.chat.id, 
             message.from_user.id
         )
-        query = f"{result.artist} {result.title}"
+        # Wrap artist and title in quotes for more precise search
+        query = f'"{result.artist}" "{result.title}"'
         yt_task = yt_svc.search(query, count=30)
         from services import spotify as sp_svc
         from services import vk_music as vk_svc
@@ -77,18 +77,33 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
         sp_task = sp_svc.search(query, count=30)
 
         results = await asyncio.gather(yt_task, vk_task, sp_task, return_exceptions=True)
-        all_tracks = []
+        all_tracks: list[TrackInfo] = []
+        
+        target_title = result.title.lower()
         for r in results:
             if isinstance(r, list):
-                all_tracks.extend(r)
+                # Filter results to ensure they at least contain the track title
+                filtered = [
+                    t for t in r 
+                    if target_title in t.title.lower() or target_title in t.artist.lower()
+                ]
+                # If filtering is too strict and returns nothing, fallback to first 5 results
+                if not filtered and r:
+                    filtered = r[:5]
+                all_tracks.extend(filtered)
 
         if not all_tracks:
             await status.edit_text(f"🎵 <b>{result.artist} – {result.title}</b>\nПолная версия не найдена.", parse_mode="HTML")
             return
 
         user_id = message.from_user.id
-        _search_cache[user_id] = all_tracks
+        # 1. Sort results first (Smart Sort)
+        from bot.handlers.search import sort_tracks
+        all_tracks = sort_tracks(all_tracks, "")
 
+        # 2. Update memory cache
+        _search_cache[user_id] = all_tracks
+        
         import json
         import uuid
         from dataclasses import asdict
@@ -107,18 +122,26 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
             )
             await db.commit()
 
-            # Record the status message so it gets deleted on route
-            msg_ids = json.dumps([status.message_id])
+            text = _format_results(all_tracks, 1, 10, len(all_tracks))
+            kb = search_results_kb(all_tracks, 1, len(all_tracks), artist_name=result.artist)
+            
+            # Send results as a NEW message
+            results_msg = await message.bot.send_message(
+                chat_id=message.chat.id,
+                text=text,
+                reply_markup=kb,
+                parse_mode="HTML",
+                message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
+            )
+
+            # Record both messages for cleanup
+            msg_ids = json.dumps([status.message_id, results_msg.message_id])
             await db.execute("UPDATE search_sessions SET general_msg_ids = ? WHERE session_id = ?", (msg_ids, session_id))
             await db.commit()
         except Exception as db_e:
             logger.error(f"Failed to save session: {db_e}")
         finally:
             await db.close()
-
-        text = f"🎵 <b>{result.artist} – {result.title}</b>\n\n" + _format_results(all_tracks, 1, 10, len(all_tracks))
-        kb = search_results_kb(all_tracks, 1, len(all_tracks))
-        await status.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
     finally:
         if os.path.exists(audio_path):

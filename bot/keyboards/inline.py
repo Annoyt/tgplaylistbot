@@ -14,6 +14,7 @@ def search_results_kb(
     per_page: int = 10,
     sort_by: str = "",
     lossless_only: bool = False,
+    artist_name: str | None = None,
 ) -> InlineKeyboardMarkup:
     """Build keyboard for search results: pagination + filters + playlist emojis."""
     total_pages = max(1, (total + per_page - 1) // per_page)
@@ -27,8 +28,8 @@ def search_results_kb(
     track_row2 = []
 
     for i in range(start, end):
-        display_idx = i - start + 1
-        btn = InlineKeyboardButton(text=f"[{display_idx}] Выбрать", callback_data=f"select_track:{i}")
+        display_idx = i + 1
+        btn = InlineKeyboardButton(text=f"[{display_idx}] Выбрать", callback_data=f"select_track:{i}:{page}")
         if len(track_row1) < 5:
             track_row1.append(btn)
         else:
@@ -68,20 +69,36 @@ def search_results_kb(
     buttons.append([
         InlineKeyboardButton(text=br_text, callback_data=f"filter:br:{br_val}:{page}"),
         InlineKeyboardButton(text=lossless_text, callback_data=f"filter:lossless:{int(not lossless_only)}:{page}"),
-        InlineKeyboardButton(text="Title", callback_data=f"filter:title:asc:{page}"),
     ])
+
+    if artist_name:
+        # Truncate to avoid 64-byte callback_data limit
+        short_name = (artist_name[:35] + '..') if len(artist_name) > 37 else artist_name
+        buttons.append([
+            InlineKeyboardButton(text="🌟 Популярные треки", callback_data=f"popular_artist:{short_name}")
+        ])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def track_detail_kb(track_index: int, is_private: bool = False) -> InlineKeyboardMarkup:
+def track_detail_kb(track_index: int, source_name: str = "MP3", is_admin: bool = False, is_cached: bool = False, page: int = 1) -> InlineKeyboardMarkup:
     """Keyboard for a specific track: only downloads."""
     buttons = []
 
+    if is_cached:
+        buttons.append([
+            InlineKeyboardButton(text="⚡ Скачать быстро (из кэша)", callback_data=f"dl:{track_index}:mp3_320"),
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="🔄 Перекачать заново", callback_data=f"dl:{track_index}:mp3_320:1")
+        ])
+    else:
+        buttons.append([
+            InlineKeyboardButton(text=f"📥 Скачать из {source_name}", callback_data=f"dl:{track_index}:mp3_320"),
+        ])
+
     buttons.append([
-        InlineKeyboardButton(text="⬇️ Скачать MP3", callback_data=f"dl:{track_index}:mp3_320"),
-        InlineKeyboardButton(text="⬇️ Скачать FLAC", callback_data=f"dl:{track_index}:flac"),
+        InlineKeyboardButton(text="⬅️ Назад к списку", callback_data=f"back_to_list:{page}")
     ])
-    buttons.append([InlineKeyboardButton(text="← Назад к списку", callback_data="back_to_list")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
