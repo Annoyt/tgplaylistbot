@@ -44,8 +44,9 @@ async def download_track(
         _last_download_time = time.time()
 
     # Lock released, now download
+    file_path = None
     if track.source == "youtube":
-        return await yt_service.download(track, quality)
+        file_path = await yt_service.download(track, quality)
     elif track.source == "vk":
         # Create captcha handler if bot info is provided
         c_handler = None
@@ -54,16 +55,46 @@ async def download_track(
             
         # Add to my audios as an anti-bot measure before downloading
         await vk_service.add_track_to_my_audios(track, captcha_handler=c_handler)
-        return await vk_service.download(track, quality, captcha_handler=c_handler)
+        file_path = await vk_service.download(track, quality, captcha_handler=c_handler)
     elif track.source == "spotify":
         query = f"{track.artist} {track.title}"
         yt_results = await yt_service.search(query, count=1)
         if yt_results:
-            return await yt_service.download(yt_results[0], quality)
+            file_path = await yt_service.download(yt_results[0], quality)
+
+    if not file_path:
+        logger.warning(f"Download failed for {track.source}: {track.title}")
         return None
-    else:
-        logger.warning(f"Unknown source: {track.source}")
-        return None
+
+    # Apply ID3 Metadata using a fast FFmpeg copy pass
+    tagged_path = file_path + ".tagged.mp3" if file_path.endswith(".mp3") else file_path + ".tagged"
+    # Ensure safe strings for arguments
+    safe_title = track.title.replace('"', '\\"')
+    safe_artist = track.artist.replace('"', '\\"')
+    cmd = [
+        "ffmpeg", "-y", "-i", file_path,
+        "-c", "copy",
+        "-metadata", f"title={track.title}",
+        "-metadata", f"artist={track.artist}",
+        tagged_path
+    ]
+    
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        if proc.returncode == 0 and os.path.exists(tagged_path) and os.path.getsize(tagged_path) > 0:
+            os.replace(tagged_path, file_path)
+            logger.info("Successfully added ID3 tags to %s", file_path)
+        else:
+            logger.warning("Failed to add ID3 tags to %s", file_path)
+            if os.path.exists(tagged_path):
+                os.remove(tagged_path)
+    except Exception as e:
+        logger.error("Exception adding ID3 tags: %s", e)
+
+    return file_path
 
 
 

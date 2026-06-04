@@ -145,7 +145,7 @@ async def cb_download(callback: CallbackQuery) -> None:
 
         if cached_file_id:
             # For cached files, use estimated size/bitrate info if possible
-            cached_caption = f"🎵 {track.artist} – {track.title} {track.source_icon} (💾 из кэша)\n"
+            cached_caption = f"🎵 {track.artist} – {track.title} {track.source_icon}\n"
             cached_caption += f"👤 #{callback.from_user.id}"
             if callback.from_user.username:
                 cached_caption += f" (@{callback.from_user.username})"
@@ -198,8 +198,14 @@ async def cb_download(callback: CallbackQuery) -> None:
             real_duration = await get_audio_duration_ffprobe(file_path)
             duration_to_use = real_duration if real_duration > 0 else track.duration
 
+            # Ensure safe filename for Telegram
+            safe_artist = track.artist.replace("/", "_").replace("\\", "_")
+            safe_title = track.title.replace("/", "_").replace("\\", "_")
+            file_extension = os.path.splitext(file_path)[1] or ".mp3"
+            telegram_filename = f"{safe_artist} - {safe_title}{file_extension}"
+
             audio_msg = await callback.message.answer_audio(
-                audio=FSInputFile(file_path),
+                audio=FSInputFile(file_path, filename=telegram_filename),
                 title=f"{track.title}{bitrate_label}",
                 performer=track.artist,
                 duration=duration_to_use,

@@ -1,232 +1,55 @@
 """
-Native HLS (m3u8) downloader for VK audio streams.
+Native HLS downloader for VK audio streams.
 
-VK serves all audio as HLS streams. This module:
-1. Parses the m3u8 master/media playlist
-2. Downloads all .ts segments in parallel with retry logic
-3. Concatenates segments via ffmpeg into a clean MP3
-4. Validates the output duration
+VK serves audio as HLS with mixed encryption:
+- Some segments are AES-128 encrypted
+- Some are plaintext
+- FFmpeg has trouble with VK's encryption — it silently drops encrypted 
+  segment audio data, resulting in truncated tracks (~66% of expected length)
 
-This replaces the broken approach of using httpx.get() on HLS URLs.
+Solution: Download all segments + decryption keys ourselves,
+decrypt AES-128 segments manually, then concat with ffmpeg.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import uuid
+import shutil
 from pathlib import Path
 from urllib.parse import urljoin
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-# Max concurrent segment downloads
 _MAX_CONCURRENCY = 8
-# Retry attempts per segment
 _MAX_RETRIES = 3
-# Timeout per segment download (seconds)
 _SEGMENT_TIMEOUT = 30
-# Timeout for playlist fetch (seconds)
 _PLAYLIST_TIMEOUT = 15
 
 
-def _parse_m3u8(content: str, base_url: str) -> list[str]:
-    """
-    Parse an m3u8 playlist and return segment URLs.
+# ─── Data types ────────────────────────────────────────────────────────
 
-    Handles both master playlists (selects highest bandwidth)
-    and media playlists (returns segment list directly).
-    """
-    lines = content.strip().splitlines()
+class HLSSegment:
+    """Represents a single HLS segment with optional encryption info."""
+    __slots__ = ("url", "duration", "index", "key_url", "key_method", "iv")
 
-    if not lines or "#EXTM3U" not in lines[0]:
-        logger.warning("Content is not a valid m3u8 playlist")
-        return []
-
-    # Check if this is a master playlist (contains #EXT-X-STREAM-INF)
-    is_master = any("#EXT-X-STREAM-INF" in line for line in lines)
-
-    if is_master:
-        # Find the highest bandwidth variant
-        best_bandwidth = -1
-        best_url = None
-        for i, line in enumerate(lines):
-            if "#EXT-X-STREAM-INF" in line:
-                bw_match = re.search(r'BANDWIDTH=(\d+)', line)
-                bandwidth = int(bw_match.group(1)) if bw_match else 0
-                # Next non-comment line is the URL
-                for j in range(i + 1, len(lines)):
-                    candidate = lines[j].strip()
-                    if candidate and not candidate.startswith("#"):
-                        if bandwidth > best_bandwidth:
-                            best_bandwidth = bandwidth
-                            best_url = candidate
-                        break
-
-        if best_url:
-            logger.info(f"Master playlist: selected variant with bandwidth={best_bandwidth}")
-            return [_resolve_url(best_url, base_url)]
-        logger.warning("Master playlist has no valid variants")
-        return []
-
-    # Media playlist — extract segment URLs
-    segments = []
-    for line in lines:
-        line = line.strip()
-        if line and not line.startswith("#"):
-            segments.append(_resolve_url(line, base_url))
-
-    return segments
+    def __init__(self, url: str, duration: float, index: int,
+                 key_url: str | None = None, key_method: str = "NONE",
+                 iv: bytes | None = None):
+        self.url = url
+        self.duration = duration
+        self.index = index
+        self.key_url = key_url
+        self.key_method = key_method
+        self.iv = iv
 
 
-def _resolve_url(url: str, base_url: str) -> str:
-    """Resolve a potentially relative URL against a base URL."""
-    if url.startswith("http://") or url.startswith("https://"):
-        return url
-    return urljoin(base_url, url)
-
-
-def _get_base_url(url: str) -> str:
-    """Extract the base URL for resolving relative paths."""
-    # Remove query string for base URL calculation
-    clean = url.split("?")[0]
-    return clean.rsplit("/", 1)[0] + "/"
-
-
-async def _fetch_playlist(
-    client: httpx.AsyncClient,
-    url: str,
-) -> tuple[str, str]:
-    """
-    Fetch an m3u8 playlist. Returns (content, final_url).
-    The final_url may differ from the input due to redirects.
-    """
-    resp = await client.get(url, timeout=_PLAYLIST_TIMEOUT)
-    resp.raise_for_status()
-    final_url = str(resp.url)
-    return resp.text, final_url
-
-
-async def _download_segment(
-    client: httpx.AsyncClient,
-    url: str,
-    output_path: Path,
-    semaphore: asyncio.Semaphore,
-    index: int,
-) -> bool:
-    """Download a single .ts segment with retry logic."""
-    async with semaphore:
-        for attempt in range(1, _MAX_RETRIES + 1):
-            try:
-                resp = await client.get(url, timeout=_SEGMENT_TIMEOUT)
-                if resp.status_code == 200 and len(resp.content) > 0:
-                    output_path.write_bytes(resp.content)
-                    return True
-                logger.warning(
-                    f"Segment {index}: HTTP {resp.status_code}, "
-                    f"size={len(resp.content)}, attempt {attempt}/{_MAX_RETRIES}"
-                )
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as e:
-                logger.warning(
-                    f"Segment {index}: {type(e).__name__} on attempt {attempt}/{_MAX_RETRIES}"
-                )
-
-            if attempt < _MAX_RETRIES:
-                await asyncio.sleep(1.0 * attempt)
-
-        logger.error(f"Segment {index}: FAILED after {_MAX_RETRIES} attempts")
-        return False
-
-
-async def _concat_with_ffmpeg(
-    segment_files: list[Path],
-    output_path: Path,
-    to_mp3: bool = True,
-) -> bool:
-    """
-    Concatenate .ts segments into a single file using ffmpeg.
-
-    Uses the concat demuxer for reliable stitching.
-    """
-    if not segment_files:
-        return False
-
-    # Create concat list file
-    list_path = segment_files[0].parent / f"concat_{uuid.uuid4().hex}.txt"
-    try:
-        with open(list_path, "w") as f:
-            for seg in segment_files:
-                # ffmpeg concat demuxer requires 'file' directive with escaped paths
-                escaped = str(seg).replace("'", "'\\''")
-                f.write(f"file '{escaped}'\n")
-
-        if to_mp3:
-            cmd = [
-                "ffmpeg",
-                "-y",                    # Overwrite output
-                "-f", "concat",          # Use concat demuxer
-                "-safe", "0",            # Allow absolute paths
-                "-i", str(list_path),    # Input list
-                "-c:a", "libmp3lame",    # Encode to MP3
-                "-b:a", "320k",          # 320 kbps
-                "-ar", "44100",          # 44.1 kHz sample rate
-                "-ac", "2",              # Stereo
-                "-write_xing", "1",      # Write VBR header for accurate duration
-                str(output_path),
-            ]
-        else:
-            # Copy without re-encoding (faster but less reliable for mixed segments)
-            cmd = [
-                "ffmpeg",
-                "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(list_path),
-                "-c", "copy",
-                str(output_path),
-            ]
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            logger.error(f"ffmpeg concat failed: {stderr.decode()[-500:]}")
-            return False
-
-        return output_path.exists() and output_path.stat().st_size > 0
-
-    finally:
-        # Cleanup list file
-        if list_path.exists():
-            list_path.unlink()
-
-
-async def get_duration_ffprobe(file_path: str | Path) -> float:
-    """Get audio duration using ffprobe. Returns 0.0 on failure."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(file_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        if proc.returncode == 0:
-            return float(stdout.decode().strip())
-    except Exception as e:
-        logger.warning(f"ffprobe failed for {file_path}: {e}")
-    return 0.0
-
+# ─── Public API ────────────────────────────────────────────────────────
 
 async def download_hls(
     url: str,
@@ -235,130 +58,102 @@ async def download_hls(
     expected_duration: int = 0,
 ) -> bool:
     """
-    Download an HLS stream to a local MP3 file.
-
-    Args:
-        url: The m3u8 playlist URL or a URL that redirects to one.
-        output_path: Where to save the final MP3 file.
-        headers: HTTP headers (User-Agent, Referer, etc.).
-        expected_duration: Expected track duration for validation (0 = skip).
-
-    Returns:
-        True if download and conversion succeeded, False otherwise.
+    Download HLS stream with full AES-128 decryption support.
+    
+    1. Fetch & parse m3u8 playlist (follows master -> variant if needed)
+    2. Download encryption keys
+    3. Download all segments in parallel
+    4. Decrypt AES-128 segments locally
+    5. Concatenate with ffmpeg -> MP3 320kbps
     """
     if headers is None:
         headers = {}
 
-    work_dir = output_path.parent / f"hls_{uuid.uuid4().hex}"
-    work_dir.mkdir(parents=True, exist_ok=True)
-
-    segment_files: list[Path] = []
+    tmp_dir = Path(f"/tmp/hls_{uuid.uuid4().hex}")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         async with httpx.AsyncClient(
-            follow_redirects=True,
-            headers=headers,
-            timeout=_PLAYLIST_TIMEOUT,
+            follow_redirects=True, headers=headers, timeout=_PLAYLIST_TIMEOUT
         ) as client:
-
-            # Step 1: Fetch the playlist
-            logger.info(f"HLS: Fetching playlist from {url[:100]}...")
-            playlist_content, final_url = await _fetch_playlist(client, url)
-            base_url = _get_base_url(final_url)
-
-            logger.debug(f"HLS: Playlist fetched ({len(playlist_content)} bytes), base_url={base_url[:80]}")
-
-            # Step 2: Parse the playlist
-            items = _parse_m3u8(playlist_content, base_url)
-
-            if not items:
-                logger.error("HLS: No segments found in playlist")
+            # Step 1: Fetch playlist
+            segments = await _resolve_segments(client, url)
+            if not segments:
+                logger.error("HLS: No segments found")
                 return False
 
-            # If we got a master playlist, the first item is a variant playlist URL
-            # We need to fetch and parse that too
-            if len(items) == 1 and items[0].endswith(".m3u8") or "m3u8" in items[0]:
-                logger.info(f"HLS: Following variant playlist: {items[0][:100]}...")
-                variant_content, variant_url = await _fetch_playlist(client, items[0])
-                base_url = _get_base_url(variant_url)
-                items = _parse_m3u8(variant_content, base_url)
+            total_m3u8_duration = sum(s.duration for s in segments)
+            logger.info(
+                f"HLS: {len(segments)} segments, "
+                f"m3u8 duration={total_m3u8_duration:.1f}s, "
+                f"VK duration={expected_duration}s"
+            )
 
-                if not items:
-                    logger.error("HLS: No segments in variant playlist")
-                    return False
-
-            logger.info(f"HLS: Found {len(items)} segments to download")
+            # Step 2: Download encryption keys
+            key_cache: dict[str, bytes] = {}
+            for seg in segments:
+                if seg.key_method == "AES-128" and seg.key_url and seg.key_url not in key_cache:
+                    key_data = await _fetch_key(client, seg.key_url)
+                    if key_data:
+                        key_cache[seg.key_url] = key_data
+                        logger.debug(f"HLS: Cached key for {seg.key_url[:60]}...")
+                    else:
+                        logger.error(f"HLS: Failed to fetch key: {seg.key_url[:80]}")
+                        return False
 
             # Step 3: Download all segments in parallel
             semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
             tasks = []
-
-            for i, seg_url in enumerate(items):
-                seg_path = work_dir / f"seg_{i:05d}.ts"
-                segment_files.append(seg_path)
-                tasks.append(
-                    _download_segment(client, seg_url, seg_path, semaphore, i)
-                )
+            for seg in segments:
+                seg_path = tmp_dir / f"seg_{seg.index:05d}.ts"
+                tasks.append(_download_and_decrypt_segment(
+                    client, seg, seg_path, key_cache, semaphore
+                ))
 
             results = await asyncio.gather(*tasks)
-            success_count = sum(1 for r in results if r)
-            fail_count = len(results) - success_count
+            success = sum(1 for r in results if r)
+            failed = len(results) - success
+            logger.info(f"HLS: Downloaded {success}/{len(segments)} segments ({failed} failed)")
 
-            logger.info(f"HLS: Downloaded {success_count}/{len(items)} segments ({fail_count} failed)")
-
-            if success_count == 0:
-                logger.error("HLS: All segment downloads failed!")
+            if success == 0:
                 return False
 
-            if fail_count > 0:
-                logger.warning(f"HLS: {fail_count} segments failed — output may have gaps")
-                # Remove failed segments from the list so ffmpeg doesn't choke
-                segment_files = [f for f in segment_files if f.exists() and f.stat().st_size > 0]
+        # Step 4: Collect successfully downloaded segment files
+        seg_files = sorted([
+            f for f in tmp_dir.glob("seg_*.ts")
+            if f.stat().st_size > 0
+        ])
 
-        # Step 4: Concatenate with ffmpeg
-        logger.info(f"HLS: Concatenating {len(segment_files)} segments with ffmpeg...")
-        ok = await _concat_with_ffmpeg(segment_files, output_path, to_mp3=True)
+        if not seg_files:
+            logger.error("HLS: No segment files after download")
+            return False
 
+        # Step 5: Concatenate with ffmpeg
+        ok = await _concat_with_ffmpeg(seg_files, output_path)
         if not ok:
             logger.error("HLS: ffmpeg concatenation failed")
             return False
 
-        # Step 5: Validate duration
-        if expected_duration > 0:
-            real_duration = await get_duration_ffprobe(output_path)
-            if real_duration > 0:
-                diff = abs(real_duration - expected_duration)
-                ratio = real_duration / expected_duration if expected_duration > 0 else 0
-                if ratio < 0.8:
-                    logger.warning(
-                        f"HLS: Duration mismatch! Real={real_duration:.1f}s, "
-                        f"Expected={expected_duration}s (ratio={ratio:.2f}). Track may be truncated."
-                    )
-                else:
-                    logger.info(
-                        f"HLS: Duration OK: {real_duration:.1f}s "
-                        f"(expected {expected_duration}s, ratio={ratio:.2f})"
-                    )
+        # Step 6: Validate
+        real_dur = await get_duration_ffprobe(output_path)
+        fsize = output_path.stat().st_size
+        logger.info(f"HLS: ✅ Done! {fsize/1024/1024:.1f} MB, {real_dur:.1f}s")
 
-        file_size = output_path.stat().st_size
-        logger.info(f"HLS: ✅ Complete! {file_size} bytes ({file_size / 1024 / 1024:.1f} MB)")
+        if expected_duration > 0 and real_dur > 0:
+            ratio = real_dur / expected_duration
+            if ratio < 0.9:
+                logger.warning(
+                    f"HLS: Possible truncation — real={real_dur:.1f}s, "
+                    f"expected={expected_duration}s (ratio={ratio:.2f})"
+                )
+
         return True
 
     except Exception as e:
         logger.error(f"HLS download failed: {e}", exc_info=True)
         return False
-
     finally:
-        # Cleanup work directory
-        for f in work_dir.iterdir():
-            try:
-                f.unlink()
-            except OSError:
-                pass
-        try:
-            work_dir.rmdir()
-        except OSError:
-            pass
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 async def download_direct_streaming(
@@ -367,112 +162,273 @@ async def download_direct_streaming(
     headers: dict[str, str] | None = None,
     max_size_bytes: int = 50 * 1024 * 1024,
 ) -> bool:
-    """
-    Download a direct audio URL using streaming (chunked) download.
-
-    Unlike httpx.get() which loads everything into memory,
-    this streams chunks to disk, which is more reliable for large files.
-    """
+    """Stream download for direct (non-HLS) audio files."""
     if headers is None:
         headers = {}
-
     try:
         async with httpx.AsyncClient(
-            follow_redirects=True,
-            headers=headers,
-            timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
+            follow_redirects=True, headers=headers, timeout=60
         ) as client:
             async with client.stream("GET", url) as resp:
                 if resp.status_code != 200:
-                    logger.error(f"Direct download: HTTP {resp.status_code}")
                     return False
-
-                content_type = resp.headers.get("content-type", "")
-                logger.info(f"Direct download: Content-Type={content_type}")
-
-                # Safety check: if server returns m3u8, abort and signal caller
-                if "mpegurl" in content_type.lower() or "m3u8" in content_type.lower():
-                    logger.warning("Direct download: Content-Type is m3u8! Need HLS downloader.")
+                ctype = resp.headers.get("content-type", "").lower()
+                if "mpegurl" in ctype or "m3u8" in ctype:
                     return False
-
                 total = 0
                 with open(output_path, "wb") as f:
-                    async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
+                    async for chunk in resp.aiter_bytes(chunk_size=128 * 1024):
                         total += len(chunk)
                         if total > max_size_bytes:
-                            logger.warning(f"Direct download: Exceeded max size ({max_size_bytes})")
                             return False
                         f.write(chunk)
-
-                logger.info(f"Direct download: ✅ {total} bytes ({total / 1024 / 1024:.1f} MB)")
                 return total > 0
-
-    except Exception as e:
-        logger.error(f"Direct download failed: {e}")
+    except Exception:
         return False
 
 
-async def detect_url_type(
-    url: str,
-    headers: dict[str, str] | None = None,
-) -> str:
-    """
-    Detect if a URL points to an HLS stream or a direct file.
-
-    Returns:
-        "hls" — URL is or redirects to an m3u8 playlist
-        "direct" — URL is a direct audio file (mp3, aac, etc.)
-        "unknown" — couldn't determine
-    """
+async def detect_url_type(url: str, headers: dict[str, str] | None = None) -> str:
+    """Detect if URL is HLS or direct audio."""
+    if ".m3u8" in url.split("?")[0]:
+        return "hls"
     if headers is None:
         headers = {}
-
-    # Quick string check
-    if "m3u8" in url or ".m3u8" in url:
-        return "hls"
-
     try:
         async with httpx.AsyncClient(
-            follow_redirects=True,
-            headers=headers,
-            timeout=15,
+            follow_redirects=True, headers=headers, timeout=10
         ) as client:
-            # HEAD request first
             resp = await client.head(url)
-            final_url = str(resp.url)
-            content_type = resp.headers.get("content-type", "").lower()
-
-            # Check final URL after redirects
-            if "m3u8" in final_url:
+            ctype = resp.headers.get("content-type", "").lower()
+            if "mpegurl" in ctype:
                 return "hls"
-
-            # Check Content-Type
-            if "mpegurl" in content_type:
-                return "hls"
-            if "audio/" in content_type or "mpeg" in content_type:
+            if "audio/" in ctype or "mpeg" in ctype:
                 return "direct"
-            if "octet-stream" in content_type:
-                # Ambiguous — do a small GET to check content
-                probe = await client.get(url, headers={"Range": "bytes=0-1023"})
-                raw = probe.content
-                try:
-                    text = raw.decode("utf-8", errors="strict")
-                    if "#EXTM3U" in text:
-                        return "hls"
-                except UnicodeDecodeError:
-                    return "direct"
+            # Probe content
+            probe = await client.get(url, headers={"Range": "bytes=0-512"})
+            if "#EXTM3U" in probe.text:
+                return "hls"
+            return "direct"
+    except Exception:
+        return "unknown"
 
-            # Fallback: probe content
-            probe = await client.get(url, headers={"Range": "bytes=0-1023"})
-            raw = probe.content
+
+async def get_duration_ffprobe(path: Path | str) -> float:
+    """Get audio duration via ffprobe."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate()
+        return float(out.decode().strip()) if out.strip() else 0.0
+    except Exception:
+        return 0.0
+
+
+# ─── Internal helpers ──────────────────────────────────────────────────
+
+async def _resolve_segments(
+    client: httpx.AsyncClient, url: str
+) -> list[HLSSegment]:
+    """Fetch and parse m3u8 — follows master playlist if needed."""
+    resp = await client.get(url)
+    resp.raise_for_status()
+    content = resp.text
+    base_url = _get_base_url(str(resp.url))
+
+    # Check for master playlist
+    if "#EXT-X-STREAM-INF" in content:
+        # Pick the best variant (highest bandwidth)
+        best_bw = -1
+        best_variant = None
+        lines = content.strip().splitlines()
+        for i, line in enumerate(lines):
+            if "#EXT-X-STREAM-INF" in line:
+                bw_m = re.search(r"BANDWIDTH=(\d+)", line)
+                bw = int(bw_m.group(1)) if bw_m else 0
+                for j in range(i + 1, len(lines)):
+                    nxt = lines[j].strip()
+                    if nxt and not nxt.startswith("#"):
+                        if bw > best_bw:
+                            best_bw = bw
+                            best_variant = _resolve_url(nxt, base_url)
+                        break
+
+        if best_variant:
+            logger.info(f"HLS: Master playlist → variant (bw={best_bw})")
+            resp2 = await client.get(best_variant)
+            resp2.raise_for_status()
+            content = resp2.text
+            base_url = _get_base_url(str(resp2.url))
+        else:
+            logger.warning("HLS: Master playlist but no variant found")
+            return []
+
+    return _parse_media_playlist(content, base_url)
+
+
+def _parse_media_playlist(content: str, base_url: str) -> list[HLSSegment]:
+    """Parse a media m3u8 playlist into HLSSegment objects with encryption info."""
+    lines = content.strip().splitlines()
+    segments: list[HLSSegment] = []
+
+    current_key_method = "NONE"
+    current_key_url: str | None = None
+    current_iv: bytes | None = None
+    seg_index = 0
+
+    for i, line in enumerate(lines):
+        line = line.strip()
+
+        # Track encryption changes
+        if line.startswith("#EXT-X-KEY"):
+            method_m = re.search(r"METHOD=([A-Z0-9-]+)", line)
+            uri_m = re.search(r'URI="([^"]+)"', line)
+            iv_m = re.search(r"IV=0x([0-9a-fA-F]+)", line)
+
+            current_key_method = method_m.group(1) if method_m else "NONE"
+            current_key_url = _resolve_url(uri_m.group(1), base_url) if uri_m else None
+            current_iv = bytes.fromhex(iv_m.group(1)) if iv_m else None
+
+            if current_key_method == "NONE":
+                current_key_url = None
+                current_iv = None
+
+        elif line.startswith("#EXTINF:"):
+            dur_m = re.search(r"#EXTINF:([\d.]+)", line)
+            duration = float(dur_m.group(1)) if dur_m else 0.0
+
+            # Next non-comment line is the segment URL
+            for j in range(i + 1, len(lines)):
+                seg_line = lines[j].strip()
+                if seg_line and not seg_line.startswith("#"):
+                    seg_url = _resolve_url(seg_line, base_url)
+
+                    # Default IV = segment sequence number (big-endian 16 bytes)
+                    iv = current_iv
+                    if current_key_method == "AES-128" and iv is None:
+                        iv = seg_index.to_bytes(16, byteorder="big")
+
+                    segments.append(HLSSegment(
+                        url=seg_url,
+                        duration=duration,
+                        index=seg_index,
+                        key_url=current_key_url,
+                        key_method=current_key_method,
+                        iv=iv,
+                    ))
+                    seg_index += 1
+                    break
+
+    return segments
+
+
+async def _fetch_key(client: httpx.AsyncClient, key_url: str) -> bytes | None:
+    """Fetch an AES-128 key (16 bytes)."""
+    for attempt in range(_MAX_RETRIES):
+        try:
+            resp = await client.get(key_url, timeout=10)
+            if resp.status_code == 200 and len(resp.content) == 16:
+                return resp.content
+            logger.warning(f"Key fetch: status={resp.status_code}, size={len(resp.content)}")
+        except Exception as e:
+            logger.warning(f"Key fetch error (attempt {attempt+1}): {e}")
+            await asyncio.sleep(0.5 * (attempt + 1))
+    return None
+
+
+async def _download_and_decrypt_segment(
+    client: httpx.AsyncClient,
+    seg: HLSSegment,
+    output_path: Path,
+    key_cache: dict[str, bytes],
+    semaphore: asyncio.Semaphore,
+) -> bool:
+    """Download a segment, decrypt if needed, save to disk."""
+    async with semaphore:
+        for attempt in range(_MAX_RETRIES):
             try:
-                text = raw.decode("utf-8", errors="strict")
-                if "#EXTM3U" in text or "#EXT-X-" in text:
-                    return "hls"
-            except UnicodeDecodeError:
-                return "direct"
+                resp = await client.get(seg.url, timeout=_SEGMENT_TIMEOUT)
+                if resp.status_code != 200 or not resp.content:
+                    logger.warning(f"Seg {seg.index}: HTTP {resp.status_code}")
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
 
-    except Exception as e:
-        logger.warning(f"URL type detection failed: {e}")
+                data = resp.content
 
-    return "unknown"
+                # Decrypt AES-128 if needed
+                if seg.key_method == "AES-128" and seg.key_url:
+                    key = key_cache.get(seg.key_url)
+                    if not key:
+                        logger.error(f"Seg {seg.index}: No key available")
+                        return False
+
+                    iv = seg.iv or seg.index.to_bytes(16, byteorder="big")
+                    try:
+                        cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+                        decryptor = cipher.decryptor()
+                        data = decryptor.update(data) + decryptor.finalize()
+
+                        # Remove PKCS7 padding
+                        if data:
+                            pad_len = data[-1]
+                            if 1 <= pad_len <= 16 and all(b == pad_len for b in data[-pad_len:]):
+                                data = data[:-pad_len]
+                    except Exception as e:
+                        logger.error(f"Seg {seg.index}: Decryption failed: {e}")
+                        return False
+
+                output_path.write_bytes(data)
+                return True
+
+            except Exception as e:
+                logger.warning(f"Seg {seg.index}: {type(e).__name__} (attempt {attempt+1})")
+                await asyncio.sleep(0.5 * (attempt + 1))
+
+    logger.error(f"Seg {seg.index}: FAILED after {_MAX_RETRIES} attempts")
+    return False
+
+
+async def _concat_with_ffmpeg(seg_files: list[Path], output_path: Path) -> bool:
+    """Concatenate decrypted .ts segments into MP3 using ffmpeg."""
+    list_path = seg_files[0].parent / "concat.txt"
+    with open(list_path, "w") as f:
+        for seg in seg_files:
+            escaped = str(seg.absolute()).replace("'", "'\\''")
+            f.write(f"file '{escaped}'\n")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-loglevel", "error",
+        "-f", "concat", "-safe", "0",
+        "-i", str(list_path),
+        "-c:a", "libmp3lame", "-b:a", "320k",
+        "-ar", "44100", "-ac", "2",
+        "-write_xing", "1",
+        str(output_path),
+    ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    _, stderr = await proc.communicate()
+
+    if proc.returncode != 0:
+        logger.error(f"ffmpeg concat failed: {stderr.decode()[-500:]}")
+        return False
+    return output_path.exists() and output_path.stat().st_size > 0
+
+
+def _resolve_url(url: str, base_url: str) -> str:
+    if url.startswith("http"):
+        return url
+    return urljoin(base_url, url)
+
+
+def _get_base_url(url: str) -> str:
+    clean = url.split("?")[0]
+    return clean.rsplit("/", 1)[0] + "/"
