@@ -1,6 +1,7 @@
 .git
 .env
 .env.*
+cookies.txt
 .agents/
 .gemini/
 *.md

@@ -78,28 +78,21 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
 
         results = await asyncio.gather(yt_task, vk_task, sp_task, return_exceptions=True)
         all_tracks: list[TrackInfo] = []
-        
-        target_title = result.title.lower()
+
         for r in results:
             if isinstance(r, list):
-                # Filter results to ensure they at least contain the track title
-                filtered = [
-                    t for t in r 
-                    if target_title in t.title.lower() or target_title in t.artist.lower()
-                ]
-                # If filtering is too strict and returns nothing, fallback to first 5 results
-                if not filtered and r:
-                    filtered = r[:5]
-                all_tracks.extend(filtered)
+                all_tracks.extend(r)
 
         if not all_tracks:
             await status.edit_text(f"🎵 <b>{result.artist} – {result.title}</b>\nПолная версия не найдена.", parse_mode="HTML")
             return
 
         user_id = message.from_user.id
-        # 1. Sort results first (Smart Sort)
-        from bot.handlers.search import sort_tracks
-        all_tracks = sort_tracks(all_tracks, "")
+        # Rank by closeness to the recognized official name. Drop weak matches,
+        # but if the threshold filters everything keep a best-effort ranking.
+        from bot.handlers.search import rank_by_relevance
+        ranked = rank_by_relevance(all_tracks, result.artist, result.title, min_score=0.45)
+        all_tracks = ranked or rank_by_relevance(all_tracks, result.artist, result.title)
 
         # 2. Update memory cache
         _search_cache[user_id] = all_tracks
@@ -230,7 +223,22 @@ async def handle_link(message: Message) -> None:
         audio_path = await yt_svc.download_from_url(url)
         if not audio_path:
             if "instagram.com" in url:
-                await status.edit_text("❌ Не удалось скачать Instagram Reels (Инстаграм блокирует скачивание без авторизации). Нужно прикрепить cookies к боту.")
+                if settings.cookies_path.exists():
+                    await status.edit_text(
+                        "❌ Не удалось скачать из Instagram даже с cookies.\n\n"
+                        "Возможные причины:\n"
+                        "• cookies устарели — выгрузите свежий `cookies.txt` и пришлите боту заново\n"
+                        "• Reels приватный или удалён\n"
+                        "• Instagram временно ограничил доступ — попробуйте позже",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await status.edit_text(
+                        "❌ Instagram блокирует скачивание без авторизации.\n\n"
+                        "Админу нужно прислать боту файл `cookies.txt` (формат Netscape), "
+                        "экспортированный из браузера, где выполнен вход в Instagram.",
+                        parse_mode="Markdown",
+                    )
             else:
                 await status.edit_text("❌ Не удалось скачать видео по этой ссылке.")
             return

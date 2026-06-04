@@ -9,6 +9,7 @@ from aiogram import Bot, Dispatcher
 
 from app.main import app as fastapi_app
 from bot.handlers.admin import router as admin_router
+from bot.handlers.audiobook import router as audiobook_router
 from bot.handlers.callbacks import router as callbacks_router
 from bot.handlers.captcha import router as captcha_router
 from bot.handlers.forum import router as forum_router
@@ -55,7 +56,22 @@ async def run_bot() -> None:
         logger.warning("TELEGRAM_BOT_TOKEN not set — bot disabled.")
         return
 
-    bot = Bot(token=settings.telegram_bot_token)
+    # Route through a self-hosted Bot API server if configured (lifts the 50 MB
+    # send limit to 2 GB — needed to deliver whole audiobooks).
+    if settings.local_bot_api:
+        from aiogram.client.session.aiohttp import AiohttpSession
+        from aiogram.client.telegram import TelegramAPIServer
+
+        api_server = TelegramAPIServer.from_base(
+            settings.telegram_api_base_url.rstrip("/"), is_local=True
+        )
+        bot = Bot(
+            token=settings.telegram_bot_token,
+            session=AiohttpSession(api=api_server),
+        )
+        logger.info("📡 Using local Bot API server at %s (2 GB uploads)", settings.telegram_api_base_url)
+    else:
+        bot = Bot(token=settings.telegram_bot_token)
     dp = Dispatcher()
 
     # Register routers (order matters: specific first)
@@ -68,6 +84,7 @@ async def run_bot() -> None:
     dp.include_router(callbacks_router)
     dp.include_router(forum_router)
     dp.include_router(auth_router)  # Handles OAuth links
+    dp.include_router(audiobook_router)  # Book mode + 📚/🎵 toggle (before plain text)
     dp.include_router(search_router)  # Last: catches plain text
 
     from bot.tasks import cleanup_loop

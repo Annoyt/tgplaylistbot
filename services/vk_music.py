@@ -338,8 +338,6 @@ async def download(
 
 async def _ytdlp_fallback(url: str, dl_dir: Path, uid: str) -> str | None:
     """Last-resort download via yt-dlp with corrected flags."""
-    import os
-
     output_template = str(dl_dir / f"{uid}.%(ext)s")
     cmd = [
         "yt-dlp",
@@ -355,9 +353,8 @@ async def _ytdlp_fallback(url: str, dl_dir: Path, uid: str) -> str | None:
         "-o", output_template,
         url,
     ]
-    if os.path.exists("cookies.txt"):
-        cmd.insert(-1, "--cookies")
-        cmd.insert(-1, "cookies.txt")
+    for arg in settings.cookie_args():
+        cmd.insert(-1, arg)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,

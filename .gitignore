@@ -16,6 +16,9 @@ venv/
 .DS_Store
 Thumbs.db
 
+# Secrets — session cookie jars for yt-dlp (full account access)
+cookies.txt
+
 # Logs
 *.log
 logs/

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import uuid
 from pathlib import Path
 
@@ -13,6 +12,13 @@ from app.db.models import TrackInfo
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+# Realistic desktop browser UA. Instagram's web extractor serves blocked/login
+# pages to non-browser agents, so we mimic Chrome alongside the cookies.
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 async def search(query: str, count: int = 30) -> list[TrackInfo]:
@@ -116,25 +122,21 @@ async def download_from_url(url: str, download_dir: Path | None = None) -> str |
     uid = uuid.uuid4().hex
     output_template = str(dl_dir / f"{uid}.%(ext)s")
     
-    # Official VK User-Agent for better segment access
-    from services.vk_music import OFFICIAL_UA
-
     cmd = [
         "yt-dlp",
         "-x",
         "--audio-format", "mp3",
         "--audio-quality", "0",
-        "--user-agent", OFFICIAL_UA,
         "--hls-prefer-native",
         "--fragment-retries", "10",
         "--retries", "3",
         "--no-part",
         "--fixup", "detect_or_warn",
+        "--user-agent", BROWSER_UA,
         "-o", output_template,
         "--max-filesize", f"{settings.max_file_size_mb}m",
     ]
-    if os.path.exists("cookies.txt"):
-        cmd.extend(["--cookies", "cookies.txt"])
+    cmd.extend(settings.cookie_args())
     cmd.append(url)
     proc = await asyncio.create_subprocess_exec(
         *cmd,

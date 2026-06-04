@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections import OrderedDict
+from difflib import SequenceMatcher
 
 from aiogram import F, Router
 from aiogram.types import Message
@@ -107,8 +109,8 @@ async def text_search(message: Message) -> None:
             await status_msg.edit_text("😔 Ничего не найдено")
             return
 
-        # Sort and Cache results (evict oldest if over limit)
-        all_tracks = sort_tracks(all_tracks, "")
+        # Rank by closeness to what the user typed, then cache (evict oldest).
+        all_tracks = rank_by_relevance(all_tracks, "", query)
         user_id = message.from_user.id
         _search_cache[user_id] = all_tracks
         if len(_search_cache) > _MAX_CACHE:
@@ -160,6 +162,135 @@ def filter_lossless(tracks: list[TrackInfo]) -> list[TrackInfo]:
     return [t for t in tracks if t.is_lossless or t.bitrate >= 320]
 
 
+# Markers of non-original edits. A track carrying one of these is penalised
+# unless the query itself asks for it (so a search for "slowed" still works).
+_EDIT_TAGS = (
+    "slowed", "sped up", "spedup", "speed up", "nightcore", "reverb",
+    "remix", "cover", "live", "karaoke", "instrumental", "8d audio", "8d",
+    "bass boosted", "mashup", "tiktok", "ringtone", "acapella", "acoustic",
+)
+
+_NOISE_RE = re.compile(r"\(.*?\)|\[.*?\]")
+_NON_WORD_RE = re.compile(r"[^\w\s]", re.UNICODE)
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalize(s: str) -> str:
+    """Lowercase, strip bracketed noise and punctuation for fuzzy comparison."""
+    s = _NOISE_RE.sub(" ", s.lower())
+    s = _NON_WORD_RE.sub(" ", s)
+    return _WS_RE.sub(" ", s).strip()
+
+
+def relevance_score(track: TrackInfo, query_artist: str, query_title: str) -> float:
+    """Return 0..1 closeness of a track to the desired official artist/title."""
+    q_title = _normalize(query_title)
+    q_artist = _normalize(query_artist)
+    t_title = _normalize(track.title)
+    t_artist = _normalize(track.artist)
+    combined_q = f"{q_artist} {q_title}".strip()
+    combined_t = f"{t_artist} {t_title}".strip()
+
+    # Best of title-only and full (artist+title) similarity, so it works whether
+    # or not the platform splits artist/title the same way we do.
+    score = max(
+        SequenceMatcher(None, q_title, t_title).ratio(),
+        SequenceMatcher(None, combined_q, combined_t).ratio(),
+    )
+
+    # Reward exact substring containment (handles "feat." / extra words).
+    if q_title and q_title in t_title:
+        score += 0.12
+    if q_artist and q_artist in combined_t:
+        score += 0.12
+
+    # Penalise remix/edit versions unless the user explicitly wanted them.
+    for tag in _EDIT_TAGS:
+        if tag in combined_t and tag not in combined_q:
+            score -= 0.25
+            break
+
+    return max(0.0, min(score, 1.0))
+
+
+def quality_score(track: TrackInfo) -> float:
+    """0..1 estimate of audio quality — heavier / higher-bitrate ranks higher."""
+    if track.is_lossless:
+        return 1.0
+    kbps = float(track.bitrate)
+    if kbps <= 0 and track.filesize > 0 and track.duration > 0:
+        # Derive bitrate from the real file weight (the "fattest" wins).
+        kbps = track.filesize * 8 / track.duration / 1000
+    if kbps <= 0:
+        # No metadata yet (YouTube/Spotify before download); assume a mid value,
+        # VK typically serves 320k.
+        kbps = 320.0 if track.source == "vk" else 192.0
+    return max(0.0, min(kbps / 320.0, 1.0))
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    s = sorted(values)
+    mid = len(s) // 2
+    return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+
+
+def _duration_score(duration: int, ref: float) -> float:
+    """1.0 near the consensus release length, decaying with distance from it.
+
+    Penalises both over-long edits (extended/looped/slowed) and short snippets.
+    """
+    if ref <= 0 or duration <= 0:
+        return 0.5  # neutral when we don't know
+    return max(0.0, 1.0 - abs(duration - ref) / ref)
+
+
+# Weights for the secondary criteria. Kept small so name relevance dominates and
+# these only reorder near-ties (the desired "best version of the right song").
+_W_QUALITY = 0.12
+_W_DURATION = 0.10
+
+
+def rank_by_relevance(
+    tracks: list[TrackInfo],
+    query_artist: str,
+    query_title: str,
+    min_score: float = 0.0,
+) -> list[TrackInfo]:
+    """Rank tracks for selection.
+
+    Primary: closeness to the official artist/title. Secondary (tie-breakers):
+    audio quality (heaviest/highest-bitrate) and duration closeness to the
+    consensus release length (median duration across the matching tracks).
+    `min_score` filters on the relevance component only.
+    """
+    kept = [
+        (rel, t)
+        for rel, t in ((relevance_score(t, query_artist, query_title), t) for t in tracks)
+        if rel >= min_score
+    ]
+    if not kept:
+        return []
+
+    # Consensus ("official") duration ≈ median length across the real matches.
+    ref = _median([float(t.duration) for _, t in kept if t.duration > 0])
+
+    scored = [
+        (
+            rel
+            + _W_QUALITY * quality_score(t)
+            + _W_DURATION * _duration_score(t.duration, ref),
+            t.filesize,  # tie-break: prefer the heaviest ("fattest") file
+            -idx,        # then keep original (platform-priority) order
+            t,
+        )
+        for idx, (rel, t) in enumerate(kept)
+    ]
+    scored.sort(key=lambda x: (-x[0], -x[1], -x[2]))
+    return [t for *_, t in scored]
+
+
 
 
 @router.message(F.text.regexp(r'https?://(?:m\.)?vk\.com/(?:music/playlist/|audio\?z=audio_playlist)(-?\d+)_(\d+)(?:(?:/|%2F|_)([a-zA-Z0-9]+))?'))
@@ -168,7 +299,6 @@ async def vk_playlist_url(message: Message) -> None:
     text = message.text.strip()
 
     # Extract owner_id, playlist_id, and access_key (if present)
-    import re
     match = re.search(r'(?:music/playlist/|audio\?z=audio_playlist)(-?\d+)_(\d+)(?:(?:/|%2F|_)([a-zA-Z0-9]+))?', text)
     if not match:
         return

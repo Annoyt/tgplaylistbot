@@ -2,8 +2,27 @@
 
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 from app.db.models import TrackInfo
+
+# Reply-keyboard labels (also matched as text in the audiobook handler).
+BTN_MUSIC = "🎵 Музыка"
+BTN_AUDIOBOOKS = "📚 Аудиокниги"
+
+
+def main_reply_kb() -> ReplyKeyboardMarkup:
+    """Persistent menu: switch between music and audiobook search modes."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_MUSIC), KeyboardButton(text=BTN_AUDIOBOOKS)]],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Название трека или книги…",
+    )
 
 
 
@@ -128,4 +147,39 @@ def confirm_topic_kb(emoji: str, track_idx: int = 0) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="✅ Да", callback_data=f"topic:create:{emoji}:{track_idx}"),
             InlineKeyboardButton(text="❌ Нет", callback_data="topic:cancel"),
         ],
+    ])
+
+
+# ── Audiobooks ────────────────────────────────────────────────────────────
+def audiobook_results_kb(
+    total: int, page: int, per_page: int = 6
+) -> InlineKeyboardMarkup:
+    """Select buttons + pagination for audiobook search results."""
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    buttons: list[list[InlineKeyboardButton]] = []
+
+    for i in range(start, end):
+        buttons.append([
+            InlineKeyboardButton(text=f"📖 [{i + 1}] Выбрать", callback_data=f"bsel:{i}:{page}")
+        ])
+
+    nav: list[InlineKeyboardButton] = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"bpage:{page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="bpage:noop"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"bpage:{page + 1}"))
+    buttons.append(nav)
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def audiobook_detail_kb(book_index: int, source_name: str = "", page: int = 1) -> InlineKeyboardMarkup:
+    """Keyboard for one audiobook: download + back."""
+    label = f"📥 Скачать книгу из {source_name}" if source_name else "📥 Скачать книгу"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data=f"bdl:{book_index}")],
+        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data=f"bback:{page}")],
     ])

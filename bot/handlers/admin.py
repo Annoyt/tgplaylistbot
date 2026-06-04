@@ -170,3 +170,47 @@ async def cmd_clear_cache(message: Message) -> None:
         await message.answer(f"❌ Ошибка при очистке кеша: {e}")
     finally:
         await db.close()
+
+@router.message(F.document)
+async def handle_cookies_upload(message: Message) -> None:
+    """Accept cookies.txt from admin to help yt-dlp bypass Instagram/YouTube blocks."""
+    if message.document.file_name != "cookies.txt":
+        return
+
+    is_admin = False
+    db = await get_db()
+    try:
+        row = await db.execute("SELECT is_admin FROM users WHERE id = ?", (message.from_user.id,))
+        res = await row.fetchone()
+        if res and res["is_admin"] == 1:
+            is_admin = True
+    finally:
+        await db.close()
+
+    if not is_admin:
+        return
+
+    # Save into the persisted data volume so it survives container restarts.
+    dest = settings.cookies_path
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        await message.bot.download(message.document, str(dest))
+        # Sanity-check: Netscape cookie jars start with a recognizable header.
+        head = dest.read_text(encoding="utf-8", errors="ignore").lstrip()[:64].lower()
+        if not head.startswith("# netscape") and "# http cookie file" not in head:
+            await message.answer(
+                "⚠️ Файл сохранён, но не похож на cookies в формате Netscape.\n\n"
+                "Экспортируйте cookies из браузера (например, расширением "
+                "«Get cookies.txt LOCALLY») и пришлите файл `cookies.txt` заново.",
+                parse_mode="Markdown",
+            )
+            return
+        await message.answer(
+            "🍪 Файл `cookies.txt` сохранён в постоянное хранилище.\n\n"
+            "Теперь он используется для обхода блокировок Instagram и YouTube "
+            "и переживёт перезапуск бота.",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при сохранении файла: {e}")
+
