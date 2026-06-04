@@ -188,6 +188,11 @@ async def handle_cookies_upload(message: Message) -> None:
         await db.close()
 
     if not is_admin:
+        await message.answer(
+            "🔒 Загрузка `cookies.txt` доступна только администраторам.\n\n"
+            "Используй `/setadmin <пароль>`, чтобы получить права.",
+            parse_mode="Markdown",
+        )
         return
 
     # Save into the persisted data volume so it survives container restarts.
