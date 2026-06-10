@@ -11,6 +11,11 @@
     {% if request.query_params.get('saved') %}
     <div class="alert alert-success">✅ Настройки сохранены</div>
     {% endif %}
+    {% if request.query_params.get('cookies') == 'ok' %}
+    <div class="alert alert-success">🍪 cookies.txt загружен в постоянное хранилище</div>
+    {% elif request.query_params.get('cookies') == 'badformat' %}
+    <div class="alert alert-error">⚠️ Файл не похож на cookies в формате Netscape. Экспортируйте через «Get cookies.txt LOCALLY».</div>
+    {% endif %}
 
     <form method="post" action="/admin/musicbot" class="settings-form">
         <section class="settings-section glass">
@@ -105,6 +110,28 @@
             <button type="submit" class="btn btn-primary">💾 Сохранить</button>
         </div>
     </form>
+
+    <section class="settings-section glass">
+        <h2>🍪 Cookies (Instagram / обход блокировок)</h2>
+        <p class="help-text">
+            {% if cookies and cookies.present %}
+            Текущий статус: <strong>✅ загружен</strong> ({{ cookies.size }} байт). Загрузка нового файла перезапишет его.
+            {% else %}
+            Текущий статус: <strong>❌ не загружен</strong>.
+            {% endif %}
+        </p>
+        <p class="help-text">
+            Экспортируйте cookies из браузера расширением «Get cookies.txt LOCALLY» (формат Netscape)
+            и загрузите файл здесь. Используется yt-dlp для Instagram и как запасной путь.
+            Файл хранится в <code>/app/data</code> и переживает перезапуск.
+        </p>
+        <form method="post" action="/admin/musicbot/cookies" enctype="multipart/form-data">
+            <div class="form-group">
+                <input type="file" name="cookies_file" accept=".txt" required>
+            </div>
+            <button type="submit" class="btn btn-primary">⬆️ Загрузить cookies.txt</button>
+        </form>
+    </section>
 </div>
 {% endblock %}
 {% block scripts %}
