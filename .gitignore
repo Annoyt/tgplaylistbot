@@ -34,3 +34,6 @@ mkdocs.yml
 serve-docs.sh
 data/
 *.db
+
+# One-off helper that hard-coded a real VK token — keep secrets out of git
+update_vk_token.py
