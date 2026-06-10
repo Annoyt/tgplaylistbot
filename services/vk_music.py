@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.db.models import TrackInfo
 from config import settings
+from services.youtube import BROWSER_UA
 
 logger = logging.getLogger(__name__)
 
@@ -344,7 +345,9 @@ async def _ytdlp_fallback(url: str, dl_dir: Path, uid: str) -> str | None:
         "-x",
         "--audio-format", "mp3",
         "--audio-quality", "0",
-        "--user-agent", OFFICIAL_UA,
+        "--user-agent", BROWSER_UA,
+        "--extractor-args", "youtube:player_client=web",
+        "-4",
         "--hls-prefer-native",
         "--fragment-retries", "10",
         "--retries", "3",
