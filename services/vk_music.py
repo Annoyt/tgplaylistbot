@@ -110,7 +110,10 @@ async def search(query: str, count: int = 30, captcha_handler=None) -> list[Trac
                     duration=int(item.get("duration", 0)),
                     source="vk",
                     source_id=f"https://vk.com/audio{item.get('owner_id')}_{item.get('id')}",
-                    bitrate=320 if item.get("is_hq") else 0,  # 0 allows models.py to fallback to ~320k
+                    # Mark HQ (320k) vs standard (128k) so ranking can prefer the
+                    # heavier upload. Don't leave non-HQ at 0 — that made every VK
+                    # track score identically in quality_score.
+                    bitrate=320 if item.get("is_hq") else 128,
                     filesize=0,
                 )
             )

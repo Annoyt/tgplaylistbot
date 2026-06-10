@@ -10,6 +10,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, FSInputFile
 
 from app.db.database import get_db, get_db_ctx
+from config import settings
 from bot.handlers.search import _format_results, filter_lossless, get_cached_tracks, sort_tracks
 from bot.keyboards.inline import search_results_kb, track_detail_kb
 from services.cache import generate_track_hash, get_cached_file_id, save_cached_file_id
@@ -17,6 +18,21 @@ from services.downloader import cleanup_file, download_track
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+async def _get_user_quality(user_id: int) -> str | None:
+    """User's chosen default audio quality (mp3_320 / flac), or None if unset."""
+    try:
+        async with get_db_ctx() as db:
+            row = await db.execute(
+                "SELECT default_quality FROM user_settings WHERE user_id = ?",
+                (user_id,),
+            )
+            res = await row.fetchone()
+            return res[0] if res and res[0] else None
+    except Exception as e:
+        logger.warning("Could not read user quality setting: %s", e)
+        return None
 
 
 @router.callback_query(F.data.startswith("page:"))
@@ -115,6 +131,12 @@ async def cb_download(callback: CallbackQuery) -> None:
     force_redownload = len(parts) > 3 and parts[3] == "1"
 
     user_id = callback.from_user.id
+
+    # Honour the user's chosen quality (/settings) instead of the value baked
+    # into the button. The keyboard ships mp3_320 as a default; if the user
+    # picked FLAC we respect it here. VK ignores this (serves a fixed bitrate).
+    quality = await _get_user_quality(user_id) or quality
+
     tracks = get_cached_tracks(user_id)
 
     if track_idx < 0 or track_idx >= len(tracks):
@@ -174,8 +196,11 @@ async def cb_download(callback: CallbackQuery) -> None:
                 return
 
             file_size = os.path.getsize(file_path)
-            if file_size > 49 * 1024 * 1024:
-                await status.edit_text("❌ Файл слишком большой для Telegram (>50MB).")
+            if file_size > settings.send_limit_bytes:
+                limit_mb = settings.send_limit_bytes // (1024 * 1024)
+                await status.edit_text(
+                    f"❌ Файл слишком большой для отправки (>{limit_mb}MB)."
+                )
                 cleanup_file(file_path)
                 return
 

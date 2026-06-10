@@ -246,9 +246,11 @@ def _duration_score(duration: int, ref: float) -> float:
     return max(0.0, 1.0 - abs(duration - ref) / ref)
 
 
-# Weights for the secondary criteria. Kept small so name relevance dominates and
-# these only reorder near-ties (the desired "best version of the right song").
-_W_QUALITY = 0.12
+# Weights for the secondary criteria. Name relevance (0..1) still dominates, but
+# quality is weighted enough to pull the higher-bitrate/lossless version of the
+# *same* song to the top — "качественные вперёд" — without overriding a clearly
+# better title match.
+_W_QUALITY = 0.20
 _W_DURATION = 0.10
 
 
