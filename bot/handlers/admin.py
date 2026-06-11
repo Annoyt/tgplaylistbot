@@ -60,6 +60,49 @@ async def cmd_setadmin(message: Message) -> None:
 
 
 
+@router.message(Command("stats"))
+async def cmd_stats(message: Message) -> None:
+    """Show usage stats (admin only): users, searches, downloads, top queries."""
+    db = await get_db()
+    try:
+        row = await db.execute("SELECT is_admin FROM users WHERE id = ?", (message.from_user.id,))
+        res = await row.fetchone()
+        if not (res and res["is_admin"] == 1):
+            return
+
+        async def scalar(sql: str) -> int:
+            cur = await db.execute(sql)
+            r = await cur.fetchone()
+            return r["n"] if r else 0
+
+        users = await scalar("SELECT COUNT(*) AS n FROM users")
+        admins = await scalar("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1")
+        searches = await scalar("SELECT COUNT(*) AS n FROM search_sessions")
+        downloads = await scalar("SELECT COUNT(*) AS n FROM cached_tracks")
+        downloads7 = await scalar(
+            "SELECT COUNT(*) AS n FROM cached_tracks WHERE created_at >= datetime('now','-7 days')"
+        )
+        cur = await db.execute(
+            "SELECT query, COUNT(*) AS c FROM search_sessions "
+            "GROUP BY lower(query) ORDER BY c DESC, max(created_at) DESC LIMIT 10"
+        )
+        top_rows = await cur.fetchall()
+    finally:
+        await db.close()
+
+    top = "\n".join(
+        f"  {i}. {r['query'][:40]} — {r['c']}" for i, r in enumerate(top_rows, 1)
+    ) or "  —"
+    await message.answer(
+        "📊 <b>Статистика бота</b>\n\n"
+        f"👥 Пользователей: <b>{users}</b> (админов: {admins})\n"
+        f"🔍 Поисков (в истории сессий): <b>{searches}</b>\n"
+        f"⬇️ Скачано треков (кэш): <b>{downloads}</b> (за 7 дней: {downloads7})\n\n"
+        f"🔝 <b>Топ запросов:</b>\n{top}",
+        parse_mode="HTML",
+    )
+
+
 async def get_global_settings() -> GlobalSettings:
     db = await get_db()
     try:

@@ -369,6 +369,53 @@ _W_QUALITY = 0.20
 _W_DURATION = 0.10
 
 
+# Words that don't help identify a song when matching duplicates across sources.
+_GROUP_NOISE = {
+    "official", "video", "music", "audio", "lyrics", "lyric", "hd", "hq", "4k",
+    "vevo", "topic", "feat", "ft", "prod", "remastered", "explicit", "the",
+    "mv", "m", "v", "clip", "visualizer",
+}
+
+
+def _track_tokens(t: TrackInfo) -> set[str]:
+    """Significant words of a track (artist+title) for duplicate detection."""
+    words = _normalize(f"{t.artist} {t.title}").split()
+    return {w for w in words if w not in _GROUP_NOISE and len(w) > 1}
+
+
+def _group_same_track(ranked: list[TrackInfo]) -> list[TrackInfo]:
+    """Keep the same song from different sources adjacent (best quality first).
+
+    Input is already score-sorted. A group is anchored at its best-ranked member,
+    so a relevant/official hit still pulls the group up, but inside the group the
+    highest-quality copy (e.g. a 320k VK upload) shows first. Nothing is removed.
+    """
+    groups: list[dict] = []
+    for t in ranked:
+        toks = _track_tokens(t)
+        placed = False
+        for g in groups:
+            if not toks or not g["tokens"]:
+                continue
+            jacc = len(toks & g["tokens"]) / len(toks | g["tokens"])
+            dur_ok = (
+                g["dur"] == 0 or t.duration == 0
+                or abs(t.duration - g["dur"]) <= 0.30 * g["dur"]
+            )
+            if jacc >= 0.65 and dur_ok:
+                g["members"].append(t)
+                placed = True
+                break
+        if not placed:
+            groups.append({"tokens": toks, "dur": t.duration, "members": [t]})
+
+    out: list[TrackInfo] = []
+    for g in groups:
+        g["members"].sort(key=lambda x: -quality_score(x))
+        out.extend(g["members"])
+    return out
+
+
 def rank_by_relevance(
     tracks: list[TrackInfo],
     query_artist: str,
@@ -413,7 +460,8 @@ def rank_by_relevance(
         for idx, (rel, t) in enumerate(kept)
     ]
     scored.sort(key=lambda x: (-x[0], -x[1], -x[2]))
-    return [t for *_, t in scored]
+    # Keep the same song from different platforms together (best quality first).
+    return _group_same_track([t for *_, t in scored])
 
 
 
