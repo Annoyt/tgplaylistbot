@@ -242,21 +242,41 @@ def _token_set_ratio(a: str, b: str) -> float:
 
 
 def _junk_penalty(track: TrackInfo, q_norm: str, longform: bool) -> float:
-    """Penalty (>=0) for podcast/junk keywords and over-long, non-song items."""
+    """Penalty for podcast/junk/over-long items.
+
+    Nothing is dropped — the penalty is large enough to sink junk below every
+    real song match (whose score is ~0..1.3), so it lands at the END of the list
+    but stays available. Hard junk sinks further than soft junk.
+    """
     if longform:
         return 0.0
     combined = _normalize(f"{track.artist} {track.title}")
     penalty = 0.0
-    for tag in _JUNK_TAGS:
-        if tag in combined and tag not in q_norm:
-            penalty += 0.6
-            break
+    if any(tag in combined and tag not in q_norm for tag in _HARD_JUNK_TAGS):
+        penalty += 2.0   # podcasts / audiobooks / episodes / interviews
+    elif any(tag in combined and tag not in q_norm for tag in _JUNK_TAGS):
+        penalty += 1.0   # compilations / greatest hits / megamix / playlists
     d = track.duration
-    if d > _SONG_LONG_SEC:
-        penalty += 0.5
+    if d > _SONG_HARD_MAX_SEC:
+        penalty += 1.5
+    elif d > _SONG_LONG_SEC:
+        penalty += 0.6
     elif d > _SONG_SUSPECT_SEC:
         penalty += 0.2
     return penalty
+
+
+# Channels/markers that signal an official upload (highest-quality, canonical).
+def _official_boost(track: TrackInfo) -> float:
+    """Boost for official sources: VEVO, YouTube '… - Topic', 'official' tags."""
+    artist = track.artist.lower()
+    title = track.title.lower()
+    boost = 0.0
+    if "vevo" in artist or "- topic" in artist or artist.endswith("topic"):
+        boost += 0.20
+    if "official" in title:
+        boost += 0.08
+    return boost
 
 
 def relevance_score(track: TrackInfo, query_artist: str, query_title: str) -> float:
@@ -351,20 +371,12 @@ def rank_by_relevance(
     longform = _is_longform_query(raw_query)
     q_norm = _normalize(raw_query)
 
-    kept = []
-    for t in tracks:
-        rel = relevance_score(t, query_artist, query_title)
-        if rel < min_score:
-            continue
-        # Hard-drop the clearly-not-a-song junk (very long, or podcast/audiobook
-        # episodes) when the user didn't ask for long-form content.
-        if not longform:
-            if t.duration > _SONG_HARD_MAX_SEC:
-                continue
-            combined = _normalize(f"{t.artist} {t.title}")
-            if any(tag in combined and tag not in q_norm for tag in _HARD_JUNK_TAGS):
-                continue
-        kept.append((rel, t))
+    # Nothing is dropped: junk is just heavily penalised so it sinks to the end.
+    kept = [
+        (rel, t)
+        for rel, t in ((relevance_score(t, query_artist, query_title), t) for t in tracks)
+        if rel >= min_score
+    ]
     if not kept:
         return []
 
@@ -376,6 +388,7 @@ def rank_by_relevance(
             rel
             + _W_QUALITY * quality_score(t)
             + _W_DURATION * _duration_score(t.duration, ref)
+            + _official_boost(t)
             - _junk_penalty(t, q_norm, longform),
             t.filesize,  # tie-break: prefer the heaviest ("fattest") file
             -idx,        # then keep original (platform-priority) order
