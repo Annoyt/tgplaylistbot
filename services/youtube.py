@@ -52,7 +52,10 @@ async def search(query: str, count: int = 30) -> list[TrackInfo]:
                     duration=duration,
                     source="youtube",
                     source_id=data.get("id", data.get("url", "")),
-                    bitrate=0,
+                    # We download the best audio (opus format 251, ~160k). Show
+                    # that as a realistic estimate — flat-playlist search carries
+                    # no per-track bitrate, and probing each is slow/rate-limited.
+                    bitrate=160,
                     filesize=0,
                 )
             )

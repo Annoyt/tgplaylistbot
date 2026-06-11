@@ -109,8 +109,18 @@ async def text_search(message: Message) -> None:
             await status_msg.edit_text("😔 Ничего не найдено")
             return
 
+        # Split "Artist - Title" so artist and title are matched separately;
+        # otherwise treat the whole query as the title (word-order tolerant).
+        q_artist, q_title = "", query
+        for sep in (" — ", " – ", " - ", " -", "- "):
+            if sep in query:
+                left, _, right = query.partition(sep)
+                if left.strip() and right.strip():
+                    q_artist, q_title = left.strip(), right.strip()
+                    break
+
         # Rank by closeness to what the user typed, then cache (evict oldest).
-        all_tracks = rank_by_relevance(all_tracks, "", query)
+        all_tracks = rank_by_relevance(all_tracks, q_artist, q_title)
         user_id = message.from_user.id
         _search_cache[user_id] = all_tracks
         if len(_search_cache) > _MAX_CACHE:
@@ -182,6 +192,73 @@ def _normalize(s: str) -> str:
     return _WS_RE.sub(" ", s).strip()
 
 
+# Markers of podcasts / non-song long-form / compilation junk. A track carrying
+# one of these (or running far longer than a song) is pushed down hard or dropped
+# — unless the user's own query asks for that kind of content.
+_JUNK_TAGS = (
+    "podcast", "подкаст", "эпизод", "episode", "выпуск", "интервью",
+    "interview", "стрим", "stream", "обзор", "review", "новости", "news",
+    "лекция", "lecture", "разговор", "аудиокнига", "audiobook", "глава",
+    "chapter", "проповедь", "сборник", "compilation", "megamix",
+    "playlist", "плейлист", "лучшие песни", "greatest hits", "all songs",
+    "full album", "целый альбом", "радио", "talk",
+)
+
+# Strongest markers — these alone justify dropping a result entirely (not just
+# penalising), since they are virtually never a song the user searched for.
+_HARD_JUNK_TAGS = (
+    "podcast", "подкаст", "эпизод", "выпуск", "episode",
+    "аудиокнига", "audiobook", "глава", "проповедь", "лекция",
+    "интервью", "interview", "talk show",
+)
+
+# If the query itself contains one of these, the user WANTS long-form, so we
+# skip the podcast/duration filtering entirely.
+_LONGFORM_QUERY_TAGS = (
+    "podcast", "подкаст", "mix", "микс", "сборник", "compilation",
+    "album", "альбом", "playlist", "плейлист", "full", "целиком",
+    "hour", "hours", "час", "часа", "часов", "lofi", "lo-fi",
+    "live set", "концерт", "concert", "greatest hits", "audiobook",
+    "аудиокнига", "лекция", "подряд",
+)
+
+_SONG_HARD_MAX_SEC = 1800   # 30 min — drop entirely (almost never a single song)
+_SONG_LONG_SEC = 1200       # 20 min — heavy penalty
+_SONG_SUSPECT_SEC = 600     # 10 min — light penalty
+
+
+def _is_longform_query(q: str) -> bool:
+    """True if the query explicitly asks for a mix/podcast/album/long content."""
+    qn = _normalize(q)
+    return any(tag in qn for tag in _LONGFORM_QUERY_TAGS)
+
+
+def _token_set_ratio(a: str, b: str) -> float:
+    """Order-independent word overlap (matches 'Believer Imagine Dragons')."""
+    sa, sb = set(a.split()), set(b.split())
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / max(len(sa), len(sb))
+
+
+def _junk_penalty(track: TrackInfo, q_norm: str, longform: bool) -> float:
+    """Penalty (>=0) for podcast/junk keywords and over-long, non-song items."""
+    if longform:
+        return 0.0
+    combined = _normalize(f"{track.artist} {track.title}")
+    penalty = 0.0
+    for tag in _JUNK_TAGS:
+        if tag in combined and tag not in q_norm:
+            penalty += 0.6
+            break
+    d = track.duration
+    if d > _SONG_LONG_SEC:
+        penalty += 0.5
+    elif d > _SONG_SUSPECT_SEC:
+        penalty += 0.2
+    return penalty
+
+
 def relevance_score(track: TrackInfo, query_artist: str, query_title: str) -> float:
     """Return 0..1 closeness of a track to the desired official artist/title."""
     q_title = _normalize(query_title)
@@ -191,11 +268,13 @@ def relevance_score(track: TrackInfo, query_artist: str, query_title: str) -> fl
     combined_q = f"{q_artist} {q_title}".strip()
     combined_t = f"{t_artist} {t_title}".strip()
 
-    # Best of title-only and full (artist+title) similarity, so it works whether
-    # or not the platform splits artist/title the same way we do.
+    # Best of title-only, full (artist+title), and order-independent word overlap,
+    # so it works whether or not the platform splits artist/title like we do and
+    # regardless of word order ("Believer Imagine Dragons" vs "Imagine Dragons …").
     score = max(
         SequenceMatcher(None, q_title, t_title).ratio(),
         SequenceMatcher(None, combined_q, combined_t).ratio(),
+        _token_set_ratio(combined_q, combined_t),
     )
 
     # Reward exact substring containment (handles "feat." / extra words).
@@ -264,14 +343,28 @@ def rank_by_relevance(
 
     Primary: closeness to the official artist/title. Secondary (tie-breakers):
     audio quality (heaviest/highest-bitrate) and duration closeness to the
-    consensus release length (median duration across the matching tracks).
+    consensus release length. Podcasts / non-song long-form / compilation junk
+    is dropped or penalised unless the query itself asks for it.
     `min_score` filters on the relevance component only.
     """
-    kept = [
-        (rel, t)
-        for rel, t in ((relevance_score(t, query_artist, query_title), t) for t in tracks)
-        if rel >= min_score
-    ]
+    raw_query = f"{query_artist} {query_title}".strip()
+    longform = _is_longform_query(raw_query)
+    q_norm = _normalize(raw_query)
+
+    kept = []
+    for t in tracks:
+        rel = relevance_score(t, query_artist, query_title)
+        if rel < min_score:
+            continue
+        # Hard-drop the clearly-not-a-song junk (very long, or podcast/audiobook
+        # episodes) when the user didn't ask for long-form content.
+        if not longform:
+            if t.duration > _SONG_HARD_MAX_SEC:
+                continue
+            combined = _normalize(f"{t.artist} {t.title}")
+            if any(tag in combined and tag not in q_norm for tag in _HARD_JUNK_TAGS):
+                continue
+        kept.append((rel, t))
     if not kept:
         return []
 
@@ -282,7 +375,8 @@ def rank_by_relevance(
         (
             rel
             + _W_QUALITY * quality_score(t)
-            + _W_DURATION * _duration_score(t.duration, ref),
+            + _W_DURATION * _duration_score(t.duration, ref)
+            - _junk_penalty(t, q_norm, longform),
             t.filesize,  # tie-break: prefer the heaviest ("fattest") file
             -idx,        # then keep original (platform-priority) order
             t,
