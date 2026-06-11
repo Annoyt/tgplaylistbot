@@ -397,12 +397,15 @@ def _group_same_track(ranked: list[TrackInfo]) -> list[TrackInfo]:
         for g in groups:
             if not toks or not g["tokens"]:
                 continue
-            jacc = len(toks & g["tokens"]) / len(toks | g["tokens"])
+            # Containment (overlap / smaller set) tolerates channel-name noise
+            # like "ImagineDragonsVEVO" vs "7clouds" better than Jaccard, while
+            # the duration gate stops different same-artist songs from merging.
+            overlap = len(toks & g["tokens"]) / min(len(toks), len(g["tokens"]))
             dur_ok = (
                 g["dur"] == 0 or t.duration == 0
                 or abs(t.duration - g["dur"]) <= 0.30 * g["dur"]
             )
-            if jacc >= 0.65 and dur_ok:
+            if overlap >= 0.70 and dur_ok:
                 g["members"].append(t)
                 placed = True
                 break
