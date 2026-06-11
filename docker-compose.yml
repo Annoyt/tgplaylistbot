@@ -1,14 +1,41 @@
 services:
+  # Self-hosted Telegram Bot API server — lifts the send limit from 50MB
+  # (cloud) to 2GB and lets the bot pass local file paths. Secrets come from
+  # .env via ${...} substitution, so nothing sensitive lives in git.
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: musicbot-botapi
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - TELEGRAM_LOCAL=true
+    volumes:
+      - tgapi-data:/var/lib/telegram-bot-api
+      - /tmp/musicbot:/tmp/musicbot
+    ports:
+      - "8081:8081"
+
   platform:
     build: .
     container_name: musicbot-platform
     restart: unless-stopped
+    depends_on:
+      - telegram-bot-api
     ports:
       - "8000:8000"
     env_file:
       - .env
     volumes:
-      # - ./data:/app/data  # managed internally
+      # Persist the DB / cookies.txt on the host — without this every redeploy
+      # wipes settings (see git history: this was previously commented out).
+      - ./data:/app/data
       - /tmp/musicbot:/tmp/musicbot
+      # Shared with the bot-api server so getFile downloads are readable.
+      - tgapi-data:/var/lib/telegram-bot-api
     environment:
       - PYTHONUNBUFFERED=1
+      - TELEGRAM_API_BASE_URL=http://telegram-bot-api:8081
+
+volumes:
+  tgapi-data:
