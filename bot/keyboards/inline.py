@@ -123,6 +123,22 @@ def track_detail_kb(track_index: int, source_name: str = "MP3", is_admin: bool =
 
 
 
+def link_video_kb(token: str) -> InlineKeyboardMarkup:
+    """Single button offering to download the source video of a pasted link."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🎬 Скачать видео", callback_data=f"lv:{token}"),
+    ]])
+
+
+def video_res_kb(token: str) -> InlineKeyboardMarkup:
+    """Resolution picker for a video download: Best / 720p / 360p."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🏆 Лучшее", callback_data=f"lvr:{token}:best"),
+        InlineKeyboardButton(text="720p", callback_data=f"lvr:{token}:720"),
+        InlineKeyboardButton(text="360p", callback_data=f"lvr:{token}:360"),
+    ]])
+
+
 def settings_kb(quality: str, priority: str) -> InlineKeyboardMarkup:
     """Settings menu keyboard."""
     q_mp3 = "✅ " if quality == "mp3_320" else ""

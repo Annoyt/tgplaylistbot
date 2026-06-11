@@ -7,12 +7,14 @@ import logging
 import os
 import re
 import tempfile
+import uuid
+from collections import OrderedDict
 
 from aiogram import F, Router
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 from bot.handlers.search import _format_results, _search_cache
-from bot.keyboards.inline import search_results_kb
+from bot.keyboards.inline import link_video_kb, search_results_kb, video_res_kb
 from config import settings
 from services import recognizer
 from services import youtube as yt_svc
@@ -22,6 +24,20 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 URL_REGEX = re.compile(r'https?://\S+', re.IGNORECASE)
+
+# Short token -> original URL, so video-download callbacks stay within Telegram's
+# 64-byte callback_data limit. Capped to avoid unbounded growth.
+_link_urls: "OrderedDict[str, str]" = OrderedDict()
+_LINK_CACHE_MAX = 1000
+
+
+def _cache_link(url: str) -> str:
+    """Store a URL under a short token for later video-download callbacks."""
+    token = uuid.uuid4().hex[:10]
+    _link_urls[token] = url
+    while len(_link_urls) > _LINK_CACHE_MAX:
+        _link_urls.popitem(last=False)
+    return token
 
 
 async def _download_tg_file(message: Message, file_id: str) -> str:
@@ -213,10 +229,22 @@ async def handle_link(message: Message) -> None:
         except Exception:
             pass
 
+    thread_id = None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
+
     status = await message.bot.send_message(
         chat_id=message.chat.id,
         text=f"🔗 Скачиваю видео с {url[:40]}...",
-        message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
+        message_thread_id=thread_id,
+    )
+
+    # Offer the full video alongside music recognition (the user can pick a
+    # resolution). Sent up-front so it's available even if recognition fails.
+    token = _cache_link(url)
+    await message.bot.send_message(
+        chat_id=message.chat.id,
+        text="🎬 Нужно само видео, а не музыка?",
+        reply_markup=link_video_kb(token),
+        message_thread_id=thread_id,
     )
 
     try:
@@ -251,3 +279,66 @@ async def handle_link(message: Message) -> None:
         await status.edit_text(f"❌ Ошибка: {e}")
         if audio_path and os.path.exists(audio_path):
             os.remove(audio_path)
+
+
+# ── Video download from a pasted link ──────────────
+@router.callback_query(F.data.startswith("lv:"))
+async def cb_link_video(callback: CallbackQuery) -> None:
+    """Show the resolution picker for a link's video."""
+    token = callback.data.split(":", 1)[1]
+    if token not in _link_urls:
+        await callback.answer("Ссылка устарела — пришлите её заново.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "🎬 В каком качестве скачать видео?",
+        reply_markup=video_res_kb(token),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("lvr:"))
+async def cb_link_video_res(callback: CallbackQuery) -> None:
+    """Download the link's video at the chosen resolution and send it."""
+    _, token, res = callback.data.split(":")
+    url = _link_urls.get(token)
+    if not url:
+        await callback.answer("Ссылка устарела — пришлите её заново.", show_alert=True)
+        return
+
+    max_height = None if res == "best" else int(res)
+    label = "Лучшее" if max_height is None else f"{max_height}p"
+    await callback.answer(f"⏳ Скачиваю видео ({label})...")
+    await callback.message.edit_text(f"⏳ Скачиваю видео ({label})...")
+
+    video_path = None
+    try:
+        video_path = await yt_svc.download_video_from_url(url, max_height=max_height)
+        if not video_path or not os.path.exists(video_path):
+            await callback.message.edit_text(
+                "❌ Не удалось скачать видео (формат недоступен или превышен лимит)."
+            )
+            return
+
+        size = os.path.getsize(video_path)
+        if size > settings.send_limit_bytes:
+            limit_mb = settings.send_limit_bytes // (1024 * 1024)
+            await callback.message.edit_text(
+                f"❌ Видео слишком большое для отправки (>{limit_mb}MB). "
+                "Попробуйте меньшее разрешение."
+            )
+            return
+
+        from aiogram.types import FSInputFile
+
+        await callback.message.edit_text(f"📤 Отправляю видео ({label})...")
+        await callback.message.answer_video(
+            video=FSInputFile(video_path),
+            caption=f"🎬 {label}",
+        )
+        await callback.message.delete()
+    except Exception as e:
+        logger.error("Video download failed: %s", e)
+        await callback.message.edit_text(f"❌ Ошибка при скачивании видео: {e}")
+    finally:
+        if video_path and os.path.exists(video_path):
+            os.remove(video_path)
