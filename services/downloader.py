@@ -109,14 +109,26 @@ def cleanup_file(file_path: str) -> None:
         logger.warning("Cleanup failed for %s: %s", file_path, e)
 
 
-def cleanup_download_dir() -> None:
-    """Remove all files in the download directory."""
+def cleanup_download_dir(older_than_sec: int = 3600) -> int:
+    """Remove leftover files older than ``older_than_sec`` from the download dir.
+
+    Age-based so we never delete a file that's mid-download or mid-send for
+    another user. Returns how many files were removed.
+    """
+    import time
+
     dl = settings.download_path
     if not dl.exists():
-        return
+        return 0
+    cutoff = time.time() - older_than_sec
+    removed = 0
     for f in dl.iterdir():
-        if f.is_file():
-            try:
+        if not f.is_file():
+            continue
+        try:
+            if f.stat().st_mtime < cutoff:
                 f.unlink()
-            except Exception:
-                pass
+                removed += 1
+        except Exception:
+            pass
+    return removed

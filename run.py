@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import uvicorn
@@ -32,7 +33,10 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(log_file, encoding="utf-8")
+        # Rotate so bot.log can't grow unbounded: 5MB × 3 backups (~20MB cap).
+        RotatingFileHandler(
+            log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        ),
     ]
 )
 logger = logging.getLogger(__name__)
@@ -91,6 +95,8 @@ async def run_bot() -> None:
     asyncio.create_task(cleanup_loop(bot))
     from bot.tasks import playlist_queue_loop
     asyncio.create_task(playlist_queue_loop(bot))
+    from bot.tasks import disk_cleanup_loop
+    asyncio.create_task(disk_cleanup_loop(bot))
 
     logger.info("🤖 Bot starting...")
     await dp.start_polling(bot)

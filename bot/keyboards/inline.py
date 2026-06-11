@@ -130,13 +130,30 @@ def link_video_kb(token: str) -> InlineKeyboardMarkup:
     ]])
 
 
-def video_res_kb(token: str) -> InlineKeyboardMarkup:
-    """Resolution picker for a video download: Best / 720p / 360p."""
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🏆 Лучшее", callback_data=f"lvr:{token}:best"),
-        InlineKeyboardButton(text="720p", callback_data=f"lvr:{token}:720"),
-        InlineKeyboardButton(text="360p", callback_data=f"lvr:{token}:360"),
-    ]])
+def _mb_label(base: str, size_bytes: int) -> str:
+    """Append an approx size like '720p (~18MB)' when known."""
+    if size_bytes and size_bytes > 0:
+        return f"{base} (~{size_bytes / (1024 * 1024):.0f}MB)"
+    return base
+
+
+def video_res_kb(token: str, sizes: dict | None = None) -> InlineKeyboardMarkup:
+    """Resolution picker + audio-only / send-as-file options.
+
+    ``sizes`` (from youtube.probe_video_sizes) annotates buttons with ~MB.
+    """
+    sizes = sizes or {}
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=_mb_label("🏆 Лучшее", sizes.get("best", 0)), callback_data=f"lvr:{token}:best"),
+            InlineKeyboardButton(text=_mb_label("720p", sizes.get("720", 0)), callback_data=f"lvr:{token}:720"),
+            InlineKeyboardButton(text=_mb_label("360p", sizes.get("360", 0)), callback_data=f"lvr:{token}:360"),
+        ],
+        [
+            InlineKeyboardButton(text="🎵 Только звук (MP3)", callback_data=f"lva:{token}"),
+            InlineKeyboardButton(text="📄 Как файл", callback_data=f"lvf:{token}"),
+        ],
+    ])
 
 
 def settings_kb(quality: str, priority: str) -> InlineKeyboardMarkup:

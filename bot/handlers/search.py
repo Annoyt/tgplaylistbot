@@ -32,8 +32,9 @@ def _format_results(tracks: list[TrackInfo], page: int, per_page: int, total: in
     lines = [f"🔍 Результаты {start+1}-{min(start+per_page, total)} из {total}\n"]
 
     for i, t in enumerate(tracks[start:start+per_page], start=start+1):
+        badge = " ✅" if _is_official(t) else ""
         lines.append(
-            f"{i}. {t.artist} – {t.title} "
+            f"{i}. {t.artist} – {t.title}{badge} "
             f"{t.duration_str} {t.source_icon} "
             f"{t.size_str} {t.bitrate_str}"
         )
@@ -266,15 +267,30 @@ def _junk_penalty(track: TrackInfo, q_norm: str, longform: bool) -> float:
     return penalty
 
 
-# Channels/markers that signal an official upload (highest-quality, canonical).
-def _official_boost(track: TrackInfo) -> float:
-    """Boost for official sources: VEVO, YouTube '… - Topic', 'official' tags."""
+# Uploader markers that signal an official, canonical upload (highest quality):
+# VEVO, YouTube auto-generated artist channels ("… - Topic"), and major labels.
+_OFFICIAL_LABELS = (
+    "vevo", "- topic", "sony music", "warner music", "universal music",
+    "believe music", "atlantic records", "columbia records", "def jam",
+    "capitol records", "republic records", "rca records", "interscope",
+    "ego music", "napalm records", "roadrunner records", "official",
+)
+
+
+def _is_official(track: TrackInfo) -> bool:
+    """True if the track's uploader looks like an official source / label."""
     artist = track.artist.lower()
-    title = track.title.lower()
+    if artist.endswith("topic") or any(m in artist for m in _OFFICIAL_LABELS):
+        return True
+    return False
+
+
+def _official_boost(track: TrackInfo) -> float:
+    """Boost for official sources so they outrank lyrics/cover channels."""
     boost = 0.0
-    if "vevo" in artist or "- topic" in artist or artist.endswith("topic"):
+    if _is_official(track):
         boost += 0.20
-    if "official" in title:
+    if "official" in track.title.lower():
         boost += 0.08
     return boost
 

@@ -6,6 +6,25 @@ from bot.handlers.admin import get_global_settings
 
 logger = logging.getLogger(__name__)
 
+
+async def disk_cleanup_loop(bot=None):
+    """Every 10 min, delete leftover download files older than an hour.
+
+    Prevents the download dir from filling the disk when a send fails or the
+    bot restarts mid-transfer (videos can be up to 2GB on the local Bot API).
+    """
+    from services.downloader import cleanup_download_dir
+
+    while True:
+        try:
+            removed = cleanup_download_dir(older_than_sec=3600)
+            if removed:
+                logger.info("Disk cleanup: removed %d stale download(s)", removed)
+        except Exception as e:
+            logger.warning("Disk cleanup failed: %s", e)
+        await asyncio.sleep(600)
+
+
 async def cleanup_loop(bot):
     """Periodically check for old pending tracks, and process scheduled track routing."""
     from bot.handlers.forum import _get_topic_map, _save_topic

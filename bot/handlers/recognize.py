@@ -281,64 +281,106 @@ async def handle_link(message: Message) -> None:
             os.remove(audio_path)
 
 
-# ── Video download from a pasted link ──────────────
+# ── Video / audio download from a pasted link ──────
 @router.callback_query(F.data.startswith("lv:"))
 async def cb_link_video(callback: CallbackQuery) -> None:
-    """Show the resolution picker for a link's video."""
+    """Probe sizes, then show the resolution / audio-only / as-file picker."""
     token = callback.data.split(":", 1)[1]
-    if token not in _link_urls:
+    url = _link_urls.get(token)
+    if not url:
         await callback.answer("Ссылка устарела — пришлите её заново.", show_alert=True)
         return
-    await callback.message.edit_text(
-        "🎬 В каком качестве скачать видео?",
-        reply_markup=video_res_kb(token),
-    )
     await callback.answer()
+    await callback.message.edit_text("🔎 Считаю размеры...")
+    sizes = None
+    try:
+        sizes = await yt_svc.probe_video_sizes(url)
+    except Exception as e:
+        logger.warning("probe_video_sizes failed: %s", e)
+    await callback.message.edit_text("🎬 Что скачать?", reply_markup=video_res_kb(token, sizes))
+
+
+async def _deliver_video(callback: CallbackQuery, url: str, max_height, label: str, as_file: bool) -> None:
+    """Download a video at ``max_height`` and send it (as video or document)."""
+    from aiogram.types import FSInputFile
+
+    await callback.message.edit_text(f"⏳ Скачиваю ({label})...")
+    path = None
+    try:
+        path = await yt_svc.download_video_from_url(url, max_height=max_height)
+        if not path or not os.path.exists(path):
+            await callback.message.edit_text("❌ Не удалось скачать (формат недоступен или превышен лимит).")
+            return
+        if os.path.getsize(path) > settings.send_limit_bytes:
+            limit_mb = settings.send_limit_bytes // (1024 * 1024)
+            await callback.message.edit_text(
+                f"❌ Видео слишком большое (>{limit_mb}MB). Попробуйте меньшее разрешение."
+            )
+            return
+        await callback.message.edit_text(f"📤 Отправляю ({label})...")
+        if as_file:
+            await callback.message.answer_document(document=FSInputFile(path), caption=f"🎬 {label} (файл)")
+        else:
+            await callback.message.answer_video(video=FSInputFile(path), caption=f"🎬 {label}")
+        await callback.message.delete()
+    except Exception as e:
+        logger.error("Video delivery failed: %s", e)
+        await callback.message.edit_text(f"❌ Ошибка: {e}")
+    finally:
+        if path and os.path.exists(path):
+            os.remove(path)
 
 
 @router.callback_query(F.data.startswith("lvr:"))
 async def cb_link_video_res(callback: CallbackQuery) -> None:
-    """Download the link's video at the chosen resolution and send it."""
+    """Download the video at the chosen resolution and send it as a video."""
     _, token, res = callback.data.split(":")
     url = _link_urls.get(token)
     if not url:
         await callback.answer("Ссылка устарела — пришлите её заново.", show_alert=True)
         return
-
     max_height = None if res == "best" else int(res)
     label = "Лучшее" if max_height is None else f"{max_height}p"
-    await callback.answer(f"⏳ Скачиваю видео ({label})...")
-    await callback.message.edit_text(f"⏳ Скачиваю видео ({label})...")
+    await callback.answer(f"⏳ {label}...")
+    await _deliver_video(callback, url, max_height, label, as_file=False)
 
-    video_path = None
+
+@router.callback_query(F.data.startswith("lvf:"))
+async def cb_link_file(callback: CallbackQuery) -> None:
+    """Send the best video as an uncompressed document (no Telegram re-encode)."""
+    token = callback.data.split(":", 1)[1]
+    url = _link_urls.get(token)
+    if not url:
+        await callback.answer("Ссылка устарела — пришлите её заново.", show_alert=True)
+        return
+    await callback.answer("⏳ Файл (лучшее)...")
+    await _deliver_video(callback, url, None, "Лучшее", as_file=True)
+
+
+@router.callback_query(F.data.startswith("lva:"))
+async def cb_link_audio(callback: CallbackQuery) -> None:
+    """Extract audio (MP3) from the link and send it as an audio file."""
+    from aiogram.types import FSInputFile
+
+    token = callback.data.split(":", 1)[1]
+    url = _link_urls.get(token)
+    if not url:
+        await callback.answer("Ссылка устарела — пришлите её заново.", show_alert=True)
+        return
+    await callback.answer("⏳ Звук (MP3)...")
+    await callback.message.edit_text("⏳ Извлекаю звук (MP3)...")
+    path = None
     try:
-        video_path = await yt_svc.download_video_from_url(url, max_height=max_height)
-        if not video_path or not os.path.exists(video_path):
-            await callback.message.edit_text(
-                "❌ Не удалось скачать видео (формат недоступен или превышен лимит)."
-            )
+        path = await yt_svc.download_from_url(url)
+        if not path or not os.path.exists(path):
+            await callback.message.edit_text("❌ Не удалось извлечь звук.")
             return
-
-        size = os.path.getsize(video_path)
-        if size > settings.send_limit_bytes:
-            limit_mb = settings.send_limit_bytes // (1024 * 1024)
-            await callback.message.edit_text(
-                f"❌ Видео слишком большое для отправки (>{limit_mb}MB). "
-                "Попробуйте меньшее разрешение."
-            )
-            return
-
-        from aiogram.types import FSInputFile
-
-        await callback.message.edit_text(f"📤 Отправляю видео ({label})...")
-        await callback.message.answer_video(
-            video=FSInputFile(video_path),
-            caption=f"🎬 {label}",
-        )
+        await callback.message.edit_text("📤 Отправляю аудио...")
+        await callback.message.answer_audio(audio=FSInputFile(path))
         await callback.message.delete()
     except Exception as e:
-        logger.error("Video download failed: %s", e)
-        await callback.message.edit_text(f"❌ Ошибка при скачивании видео: {e}")
+        logger.error("Audio extract failed: %s", e)
+        await callback.message.edit_text(f"❌ Ошибка: {e}")
     finally:
-        if video_path and os.path.exists(video_path):
-            os.remove(video_path)
+        if path and os.path.exists(path):
+            os.remove(path)

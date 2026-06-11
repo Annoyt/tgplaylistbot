@@ -223,3 +223,65 @@ async def download_video_from_url(
             return str(f)
     return None
 
+
+async def probe_video_sizes(url: str) -> dict | None:
+    """Estimate download size (bytes) for 360p / 720p / best of a video URL.
+
+    One yt-dlp metadata call. Returns {'duration', '360', '720', 'best'} or None.
+    Sizes may be 0 when the source doesn't report them (e.g. some HLS streams).
+    """
+    cmd = [
+        "yt-dlp", "-J", "--no-warnings", "--no-playlist",
+        "--user-agent", BROWSER_UA,
+        "--extractor-args", "youtube:player_client=android_vr,android,ios",
+        "-4",
+    ]
+    cmd.extend(settings.cookie_args())
+    cmd.append(url)
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    if proc.returncode != 0 or not stdout:
+        return None
+
+    try:
+        data = json.loads(stdout.decode())
+    except json.JSONDecodeError:
+        return None
+
+    formats = data.get("formats") or []
+
+    def _fsize(f: dict) -> int:
+        return int(f.get("filesize") or f.get("filesize_approx") or 0)
+
+    audio = [
+        f for f in formats
+        if f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none")
+    ]
+    a_size = max((_fsize(f) for f in audio), default=0)
+
+    def size_for(max_h: int | None) -> int:
+        vids = [
+            f for f in formats
+            if f.get("vcodec") not in (None, "none")
+            and (max_h is None or (f.get("height") or 0) <= max_h)
+        ]
+        if not vids:
+            return 0
+        best = max(vids, key=lambda f: (f.get("height") or 0))
+        s = _fsize(best)
+        if best.get("acodec") in (None, "none"):  # video-only → add audio
+            s += a_size
+        return s
+
+    return {
+        "duration": int(data.get("duration") or 0),
+        "360": size_for(360),
+        "720": size_for(720),
+        "best": size_for(None),
+    }
+
