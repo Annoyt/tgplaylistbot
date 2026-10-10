@@ -20,6 +20,12 @@ flock -w 900 9 || { echo "✖ another deploy is still running"; exit 1; }
 echo "▶ git pull"
 git pull --ff-only || { echo "✖ git pull failed"; exit 1; }
 
+# Download dir shared by both containers. It used to be host /tmp/musicbot:
+# systemd wipes /tmp on reboot, Docker then recreated it root-owned 755, and
+# the non-root bot (uid 100) couldn't write a single file — every download
+# failed with "Permission denied" from 2026-09-14 to 2026-10-10.
+mkdir -p downloads && chmod 1777 downloads
+
 echo "▶ docker compose build (old bot keeps running)"
 docker compose build || { echo "✖ build failed"; exit 1; }
 

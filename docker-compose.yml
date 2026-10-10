@@ -20,7 +20,9 @@ services:
       - TELEGRAM_LOCAL=true
     volumes:
       - tgapi-data:/var/lib/telegram-bot-api
-      - /tmp/musicbot:/tmp/musicbot
+      # Downloads shared with the bot (same in-container path, so local-mode
+      # sends can pass file paths). Not host /tmp: see deploy.sh.
+      - ./downloads:/tmp/musicbot
     ports:
       - "8081:8081"
 
@@ -39,7 +41,7 @@ services:
       # Persist the DB / cookies.txt on the host — without this every redeploy
       # wipes settings (see git history: this was previously commented out).
       - ./data:/app/data
-      - /tmp/musicbot:/tmp/musicbot
+      - ./downloads:/tmp/musicbot
       # Shared with the bot-api server so getFile downloads are readable.
       - tgapi-data:/var/lib/telegram-bot-api
     environment:
