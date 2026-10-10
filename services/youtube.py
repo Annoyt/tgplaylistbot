@@ -265,6 +265,19 @@ async def download_from_url(url: str, download_dir: Path | None = None) -> str |
     return None
 
 
+def _video_format_args(max_height: int | None) -> list[str]:
+    """yt-dlp format args for a video download, shared with the size probe.
+
+    ``-S res:N`` = best quality whose *smaller* side is ≤ N (else the closest
+    above), so a vertical 720×1280 Short counts as 720p; a ``[height<=720]``
+    filter dropped it to 360×640.
+    """
+    args = ["-f", "bv*+ba/b"]
+    if max_height:
+        args += ["-S", f"res:{max_height}"]
+    return args
+
+
 async def download_video_from_url(
     url: str,
     max_height: int | None = None,
@@ -281,16 +294,10 @@ async def download_video_from_url(
     uid = uuid.uuid4().hex
     output_template = str(dl_dir / f"{uid}.%(ext)s")
 
-    if max_height:
-        # Best video+audio merge ≤ height, else best combined ≤ height, else best.
-        fmt = f"bv*[height<={max_height}]+ba/b[height<={max_height}]/b"
-    else:
-        fmt = "bv*+ba/b"
-
     limit_mb = settings.send_limit_bytes // (1024 * 1024)
     cmd = [
         "yt-dlp",
-        "-f", fmt,
+        *_video_format_args(max_height),
         "--merge-output-format", "mp4",
         "--no-playlist",
         "--fragment-retries", "10",
@@ -326,8 +333,12 @@ async def download_video_from_url(
 async def probe_video_sizes(url: str) -> dict | None:
     """Estimate download size (bytes) for 360p / 720p / best of a video URL.
 
-    One yt-dlp metadata call. Returns {'duration', '360', '720', 'best'} or None.
-    Sizes may be 0 when the source doesn't report them (e.g. some HLS streams).
+    One network call (-J), then yt-dlp's own format selection runs offline on
+    the saved info (--load-info-json) with the exact args the download uses,
+    so each estimate is for the formats that will really be fetched. (Guessing
+    the format here picked HLS variants without a size and reported only the
+    audio track.) Returns {'duration', '360', '720', 'best'} or None; a size is
+    0 when the source reports neither size nor bitrate.
     """
     cmd = [
         "yt-dlp", "-J", "--no-warnings", "--no-playlist",
@@ -338,49 +349,36 @@ async def probe_video_sizes(url: str) -> dict | None:
     cmd.extend(settings.cookie_args())
     cmd.append(url)
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    stdout, _ = await proc.communicate()
-    if proc.returncode != 0 or not stdout:
+    rc, stdout, _ = await _run(*cmd, timeout=90)
+    if rc != 0 or not stdout:
         return None
-
     try:
-        data = json.loads(stdout.decode())
+        duration = int(json.loads(stdout).get("duration") or 0)
     except json.JSONDecodeError:
         return None
 
-    formats = data.get("formats") or []
+    info_path = settings.download_path / f"{uuid.uuid4().hex}.info.json"
+    info_path.write_bytes(stdout)
 
-    def _fsize(f: dict) -> int:
-        return int(f.get("filesize") or f.get("filesize_approx") or 0)
-
-    audio = [
-        f for f in formats
-        if f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none")
-    ]
-    a_size = max((_fsize(f) for f in audio), default=0)
-
-    def size_for(max_h: int | None) -> int:
-        vids = [
-            f for f in formats
-            if f.get("vcodec") not in (None, "none")
-            and (max_h is None or (f.get("height") or 0) <= max_h)
-        ]
-        if not vids:
+    async def size_for(max_height: int | None) -> int:
+        rc, out, _ = await _run(
+            "yt-dlp", "--load-info-json", str(info_path), "--no-warnings",
+            *_video_format_args(max_height),
+            "-O", "%(filesize,filesize_approx)s %(tbr)s",
+            timeout=30,
+        )
+        if rc != 0:
             return 0
-        best = max(vids, key=lambda f: (f.get("height") or 0))
-        s = _fsize(best)
-        if best.get("acodec") in (None, "none"):  # video-only → add audio
-            s += a_size
-        return s
+        size, tbr = (out.decode().split() + ["NA", "NA"])[:2]
+        if size != "NA":
+            return int(float(size))
+        if tbr != "NA" and duration:  # HLS: no size, estimate from bitrate (kbit/s)
+            return int(float(tbr) * 125 * duration)
+        return 0
 
-    return {
-        "duration": int(data.get("duration") or 0),
-        "360": size_for(360),
-        "720": size_for(720),
-        "best": size_for(None),
-    }
+    try:
+        s360, s720, best = await asyncio.gather(size_for(360), size_for(720), size_for(None))
+    finally:
+        info_path.unlink(missing_ok=True)
+    return {"duration": duration, "360": s360, "720": s720, "best": best}
 

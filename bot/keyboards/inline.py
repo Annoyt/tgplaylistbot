@@ -135,10 +135,20 @@ def link_menu_kb(token: str) -> InlineKeyboardMarkup:
 
 
 def _mb_label(base: str, size_bytes: int) -> str:
-    """Append an approx size like '720p (~18MB)' when known."""
-    if size_bytes and size_bytes > 0:
-        return f"{base} (~{size_bytes / (1024 * 1024):.0f}MB)"
-    return base
+    """Append an approx size like '720p (~18MB)' when known.
+
+    Small files get KB / one decimal: whole MB showed a 220KB Short as "~0MB".
+    """
+    if not size_bytes or size_bytes <= 0:
+        return base
+    mb = size_bytes / (1024 * 1024)
+    if mb < 1:
+        size = f"{max(1, round(size_bytes / 1024))}KB"
+    elif mb < 10:
+        size = f"{mb:.1f}MB"
+    else:
+        size = f"{mb:.0f}MB"
+    return f"{base} (~{size})"
 
 
 def video_res_kb(token: str, sizes: dict | None = None) -> InlineKeyboardMarkup:

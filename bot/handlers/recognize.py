@@ -17,6 +17,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.handlers.search import _format_results, _search_cache
 from bot.keyboards.inline import link_menu_kb, search_results_kb, video_res_kb
+from bot.signature import with_signature
 from config import settings
 from services import recognizer
 from services import youtube as yt_svc
@@ -393,10 +394,14 @@ async def _deliver_video(callback: CallbackQuery, url: str, max_height, label: s
             )
             return
         await callback.message.edit_text(f"📤 Отправляю ({label})...")
+        caption = await with_signature(
+            f"🎬 {label} (файл)" if as_file else f"🎬 {label}",
+            callback.bot, callback.message.chat.type,
+        )
         if as_file:
-            await callback.message.answer_document(document=FSInputFile(path), caption=f"🎬 {label} (файл)")
+            await callback.message.answer_document(document=FSInputFile(path), caption=caption)
         else:
-            await callback.message.answer_video(video=FSInputFile(path), caption=f"🎬 {label}")
+            await callback.message.answer_video(video=FSInputFile(path), caption=caption)
         await callback.message.delete()
     except Exception as e:
         logger.error("Video delivery failed: %s", e)
@@ -451,7 +456,10 @@ async def cb_link_audio(callback: CallbackQuery) -> None:
             await callback.message.edit_text("❌ Не удалось извлечь звук.")
             return
         await callback.message.edit_text("📤 Отправляю аудио...")
-        await callback.message.answer_audio(audio=FSInputFile(path))
+        await callback.message.answer_audio(
+            audio=FSInputFile(path),
+            caption=await with_signature("", callback.bot, callback.message.chat.type),
+        )
         await callback.message.delete()
     except Exception as e:
         logger.error("Audio extract failed: %s", e)

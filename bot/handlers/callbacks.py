@@ -13,6 +13,7 @@ from app.db.database import get_db, get_db_ctx
 from config import settings
 from bot.handlers.search import _format_results, filter_lossless, get_cached_tracks, sort_tracks
 from bot.keyboards.inline import search_results_kb, track_detail_kb
+from bot.signature import with_signature
 from services.cache import generate_track_hash, get_cached_file_id, save_cached_file_id
 from services.downloader import cleanup_file, download_track
 
@@ -176,7 +177,7 @@ async def cb_download(callback: CallbackQuery) -> None:
             try:
                 audio_msg = await callback.message.answer_audio(
                     audio=cached_file_id,
-                    caption=cached_caption,
+                    caption=await with_signature(cached_caption, callback.bot, callback.message.chat.type),
                 )
             except Exception as e:
                 logger.warning(f"Failed to send cached audio (maybe deleted?): {e}")
@@ -234,7 +235,7 @@ async def cb_download(callback: CallbackQuery) -> None:
                 title=f"{track.title}{bitrate_label}",
                 performer=track.artist,
                 duration=duration_to_use,
-                caption=caption_text,
+                caption=await with_signature(caption_text, callback.bot, callback.message.chat.type),
             )
 
             # Save file_id to cache for future requests
