@@ -41,6 +41,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+_web_server: uvicorn.Server | None = None
+
 
 async def run_web() -> None:
     """Start FastAPI with uvicorn."""
@@ -50,8 +52,9 @@ async def run_web() -> None:
         port=8000,
         log_level="info",
     )
-    server = uvicorn.Server(config)
-    await server.serve()
+    global _web_server
+    _web_server = uvicorn.Server(config)
+    await _web_server.serve()
 
 
 async def run_bot() -> None:
@@ -116,10 +119,28 @@ async def main() -> None:
     except Exception as e:
         logger.error(f"❌ Database init failed: {e}")
 
-    await asyncio.gather(
-        run_web(),
-        run_bot(),
-    )
+    # SIGTERM is caught by only one of uvicorn / aiogram (whoever installed its
+    # handler last), so with a plain gather() the other kept running and
+    # `docker stop` hung for 10s until SIGKILL (python is PID 1, so the default
+    # SIGTERM action never fires). When either side stops, stop the other.
+    web = asyncio.create_task(run_web())
+    tasks = [web]
+    if settings.telegram_bot_token:
+        tasks.append(asyncio.create_task(run_bot()))
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        if task is web and _web_server is not None:
+            # Graceful exit; cancelling uvicorn logs a CancelledError traceback.
+            _web_server.should_exit = True
+        else:
+            task.cancel()
+    if pending:
+        _, stuck = await asyncio.wait(pending, timeout=5)
+        for task in stuck:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+    for task in done:
+        task.result()  # re-raise a crash so the container restarts
 
 
 if __name__ == "__main__":
