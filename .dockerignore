@@ -16,3 +16,4 @@ docs/
 mkdocs.yml
 serve-docs.sh
 .github/
+deploy.sh
