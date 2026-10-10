@@ -123,11 +123,15 @@ def track_detail_kb(track_index: int, source_name: str = "MP3", is_admin: bool =
 
 
 
-def link_video_kb(token: str) -> InlineKeyboardMarkup:
-    """Single button offering to download the source video of a pasted link."""
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🎬 Скачать видео", callback_data=f"lv:{token}"),
-    ]])
+def link_menu_kb(token: str) -> InlineKeyboardMarkup:
+    """What to do with a pasted link: the video, its audio, or find its track."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🎬 Скачать видео", callback_data=f"lv:{token}"),
+            InlineKeyboardButton(text="🎧 Звук MP3", callback_data=f"lva:{token}"),
+        ],
+        [InlineKeyboardButton(text="🎵 Найти трек из видео", callback_data=f"lr:{token}")],
+    ])
 
 
 def _mb_label(base: str, size_bytes: int) -> str:

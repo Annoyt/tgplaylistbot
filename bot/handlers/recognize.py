@@ -16,7 +16,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
 from bot.handlers.search import _format_results, _search_cache
-from bot.keyboards.inline import link_video_kb, search_results_kb, video_res_kb
+from bot.keyboards.inline import link_menu_kb, search_results_kb, video_res_kb
 from config import settings
 from services import recognizer
 from services import youtube as yt_svc
@@ -84,28 +84,45 @@ async def _download_tg_file(message: Message, file_id: str) -> str:
     return tmp
 
 
-async def _recognize_and_search(message: Message, audio_path: str) -> None:
-    """Recognize track from audio file, then search for full version."""
+async def _recognize_and_search(
+    message: Message,
+    audio_path: str,
+    *,
+    status: Message | None = None,
+    user_id: int | None = None,
+) -> None:
+    """Recognize track from audio file, then search for full version.
 
+    ``message`` is the user's message. From a button press there is none:
+    pass the bot's message to reuse as ``status`` and the presser's ``user_id``.
+    """
+    from_button = status is not None
+    user_id = user_id or message.from_user.id
 
-    # Cross-Topic Routing
-    if getattr(message.chat, 'is_forum', False) and getattr(message, 'message_thread_id', None) is not None:
-        try:
-            await message.delete()
-        except Exception:
-            pass
+    if from_button:
+        await status.edit_text("🎧 Распознаю трек...")
+    else:
+        # Cross-Topic Routing
+        if getattr(message.chat, 'is_forum', False) and getattr(message, 'message_thread_id', None) is not None:
+            try:
+                await message.delete()
+            except Exception:
+                pass
 
-    status = await message.bot.send_message(
-        chat_id=message.chat.id,
-        text="🎧 Распознаю трек...",
-        message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
-    )
+        status = await message.bot.send_message(
+            chat_id=message.chat.id,
+            text="🎧 Распознаю трек...",
+            message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
+        )
 
     try:
         result = await recognizer.recognize(audio_path, settings.acoustid_api_key)
 
         if not result:
-            await status.edit_text("😔 Ничего не нашлось. Попробуй более длинный фрагмент.")
+            await status.edit_text(
+                "😔 Не удалось распознать музыку в этом видео." if from_button
+                else "😔 Ничего не нашлось. Попробуй более длинный фрагмент."
+            )
             return
 
         await status.edit_text(
@@ -115,9 +132,9 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
 
         # Search for full version
         c_handler = captcha_manager.get_captcha_handler(
-            message.bot, 
-            message.chat.id, 
-            message.from_user.id
+            message.bot,
+            message.chat.id,
+            user_id
         )
         # Wrap artist and title in quotes for more precise search
         query = f'"{result.artist}" "{result.title}"'
@@ -138,7 +155,6 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
             await status.edit_text(f"🎵 <b>{result.artist} – {result.title}</b>\nПолная версия не найдена.", parse_mode="HTML")
             return
 
-        user_id = message.from_user.id
         # Rank by closeness to the recognized official name. Drop weak matches,
         # but if the threshold filters everything keep a best-effort ranking.
         from bot.handlers.search import rank_by_relevance
@@ -158,7 +174,10 @@ async def _recognize_and_search(message: Message, audio_path: str) -> None:
         db = await get_db()
         try:
             tracks_json = json.dumps([asdict(t) for t in all_tracks])
-            orig_id = message.message_id if getattr(message, 'message_thread_id', None) is None else None
+            # From a button, ``message`` is the bot's own (status) message.
+            orig_id = None if from_button else (
+                message.message_id if getattr(message, 'message_thread_id', None) is None else None
+            )
 
             await db.execute(
                 "INSERT INTO search_sessions (session_id, user_id, chat_id, general_msg_ids, query, state_data, original_msg_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -280,50 +299,56 @@ async def handle_link(message: Message) -> None:
         )
         return
 
-    status = await message.bot.send_message(
-        chat_id=message.chat.id,
-        text=f"🔗 Скачиваю видео с {url[:40]}...",
-        message_thread_id=thread_id,
-    )
-
-    # Offer the full video alongside music recognition (the user can pick a
-    # resolution). Sent up-front so it's available even if recognition fails.
+    # One menu and nothing automatic: the user picks the video, its audio, or
+    # track recognition. Auto-recognizing every link posted "nothing found"
+    # even when people only wanted the video.
     token = _cache_link(url)
     await message.bot.send_message(
         chat_id=message.chat.id,
-        text="🎬 Нужно само видео, а не музыка?",
-        reply_markup=link_video_kb(token),
+        text="🔗 Что сделать с этой ссылкой?",
+        reply_markup=link_menu_kb(token),
         message_thread_id=thread_id,
     )
+
+
+def _link_download_error(url: str) -> str:
+    """Markdown error text for a link yt-dlp couldn't download."""
+    if "instagram.com" not in url:
+        return "❌ Не удалось скачать видео по этой ссылке."
+    if settings.cookies_path.exists():
+        return (
+            "❌ Не удалось скачать из Instagram даже с cookies.\n\n"
+            "Возможные причины:\n"
+            "• cookies устарели — выгрузите свежий `cookies.txt` и пришлите боту заново\n"
+            "• Reels приватный или удалён\n"
+            "• Instagram временно ограничил доступ — попробуйте позже"
+        )
+    return (
+        "❌ Instagram блокирует скачивание без авторизации.\n\n"
+        "Админу нужно прислать боту файл `cookies.txt` (формат Netscape), "
+        "экспортированный из браузера, где выполнен вход в Instagram."
+    )
+
+
+@router.callback_query(F.data.startswith("lr:"))
+async def cb_link_recognize(callback: CallbackQuery) -> None:
+    """Recognize the music in a pasted link's video, then search for the track."""
+    token = callback.data.split(":", 1)[1]
+    url = _link_urls.get(token)
+    if not url:
+        await callback.answer("Ссылка устарела — пришлите её заново.", show_alert=True)
+        return
+    await callback.answer()
+    status = callback.message
+    await status.edit_text("⏳ Скачиваю звук для распознавания...")
 
     audio_path = None
     try:
         audio_path = await yt_svc.download_from_url(url)
         if not audio_path:
-            if "instagram.com" in url:
-                if settings.cookies_path.exists():
-                    await status.edit_text(
-                        "❌ Не удалось скачать из Instagram даже с cookies.\n\n"
-                        "Возможные причины:\n"
-                        "• cookies устарели — выгрузите свежий `cookies.txt` и пришлите боту заново\n"
-                        "• Reels приватный или удалён\n"
-                        "• Instagram временно ограничил доступ — попробуйте позже",
-                        parse_mode="Markdown",
-                    )
-                else:
-                    await status.edit_text(
-                        "❌ Instagram блокирует скачивание без авторизации.\n\n"
-                        "Админу нужно прислать боту файл `cookies.txt` (формат Netscape), "
-                        "экспортированный из браузера, где выполнен вход в Instagram.",
-                        parse_mode="Markdown",
-                    )
-            else:
-                await status.edit_text("❌ Не удалось скачать видео по этой ссылке.")
+            await status.edit_text(_link_download_error(url), parse_mode="Markdown")
             return
-
-        await status.edit_text("🎧 Распознаю трек...")
-        await _recognize_and_search(message, audio_path)
-
+        await _recognize_and_search(status, audio_path, status=status, user_id=callback.from_user.id)
     except Exception as e:
         logger.error("Link recognition failed: %s", e)
         await status.edit_text(f"❌ Ошибка: {e}")
