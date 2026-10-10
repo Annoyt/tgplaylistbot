@@ -48,9 +48,10 @@ class Settings(BaseSettings):
     audiobook_part_size_mb: int = 45       # target size per part when splitting
 
     # ── yt-dlp self-update ────────────────────────────
-    # venv holding yt-dlp (set to /opt/ytdlp by the Dockerfile). Empty = no
-    # auto-update (local dev). "nightly" gets YouTube fixes days earlier.
-    ytdlp_venv: str = ""
+    # Dir with yt-dlp venvs + the "current" symlink (set to /opt/ytdlp by the
+    # Dockerfile). Empty = no auto-update (local dev). "nightly" gets YouTube
+    # fixes days earlier.
+    ytdlp_dir: str = ""
     ytdlp_channel: str = "nightly"         # "nightly" | "stable"
     ytdlp_update_hours: int = 12
 

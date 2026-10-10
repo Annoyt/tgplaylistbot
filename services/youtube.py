@@ -5,6 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shutil
+import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -42,44 +46,77 @@ async def ytdlp_version() -> str:
     return out.decode().strip() or "?"
 
 
-async def update_ytdlp() -> tuple[str, str] | None:
-    """Upgrade yt-dlp inside its venv. Returns (old, new) versions or None.
-
-    The next yt-dlp subprocess picks up the new version — no restart needed.
-    Skipped when no venv is configured (local dev).
-    """
-    pip = Path(settings.ytdlp_venv) / "bin" / "pip"
-    if not settings.ytdlp_venv or not pip.exists():
-        return None
-
-    old = await ytdlp_version()
-    cmd = [str(pip), "install", "--upgrade", "--no-cache-dir",
-           "--disable-pip-version-check", "--quiet"]
-    if settings.ytdlp_channel == "nightly":
-        cmd.append("--pre")  # yt-dlp publishes nightlies to PyPI as pre-releases
-    cmd.append("yt-dlp[default]")
-
+async def _run(*cmd: str, timeout: float = 300) -> tuple[int, bytes, bytes]:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
-        stdout=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        logger.warning("yt-dlp update timed out")
+        return -1, b"", b"timed out"
+    return proc.returncode, out, err
+
+
+async def update_ytdlp() -> tuple[str, str] | None:
+    """Upgrade yt-dlp if a newer release exists. Returns (old, new) or None.
+
+    An in-place ``pip install -U`` deletes the yt-dlp entrypoint for a few
+    seconds, failing any download started meanwhile. So the new version goes
+    into a fresh venv and ``current`` is atomically repointed at it. The
+    replaced venv is kept until the next upgrade, since a running yt-dlp may
+    still import from it. Skipped when no yt-dlp dir is configured (local dev).
+    """
+    if not settings.ytdlp_dir:
         return None
-    if proc.returncode != 0:
-        logger.warning("yt-dlp update failed: %s", stderr.decode(errors="replace")[-300:])
+    root = Path(settings.ytdlp_dir)
+    current = root / "current"
+    if not current.exists():
         return None
 
-    new = await ytdlp_version()
-    if new != old:
-        logger.info("⬆️ yt-dlp updated: %s → %s", old, new)
-    else:
-        logger.info("yt-dlp is up to date (%s)", new)
+    spec = ["--pre"] if settings.ytdlp_channel == "nightly" else []  # nightlies are PyPI pre-releases
+    spec.append("yt-dlp[default]")
+    pip_flags = ["--no-cache-dir", "--disable-pip-version-check", "--quiet"]
+
+    # Cheap check first: would pip upgrade yt-dlp itself in the live venv?
+    rc, out, err = await _run(
+        str(current / "bin" / "pip"), "install", "-U", "--dry-run", "--report", "-",
+        *pip_flags, *spec,
+    )
+    if rc != 0:
+        logger.warning("yt-dlp update check failed: %s", err.decode(errors="replace")[-300:])
+        return None
+    planned = json.loads(out or b"{}").get("install", [])
+    if not any(p["metadata"]["name"].lower().replace("_", "-") == "yt-dlp" for p in planned):
+        logger.info("yt-dlp is up to date (%s)", await ytdlp_version())
+        return None
+
+    old = await ytdlp_version()
+    new_venv = root / f"v{int(time.time())}"
+    rc, out, err = await _run(sys.executable, "-m", "venv", str(new_venv))
+    if rc == 0:
+        rc, out, err = await _run(str(new_venv / "bin" / "pip"), "install", *pip_flags, *spec)
+    if rc == 0:
+        rc, out, err = await _run(str(new_venv / "bin" / "yt-dlp"), "--version", timeout=60)
+    if rc != 0:
+        logger.warning("yt-dlp update failed: %s", err.decode(errors="replace")[-300:])
+        shutil.rmtree(new_venv, ignore_errors=True)
+        return None
+    new = out.decode().strip()
+
+    previous = current.resolve()
+    tmp = root / "current.tmp"
+    tmp.unlink(missing_ok=True)
+    tmp.symlink_to(new_venv.name)
+    os.replace(tmp, current)  # atomic: a download sees the old or the new, never neither
+
+    for d in root.iterdir():  # keep only the new venv and the one just replaced
+        if d.is_dir() and not d.is_symlink() and d not in (new_venv, previous):
+            shutil.rmtree(d, ignore_errors=True)
+    logger.info("⬆️ yt-dlp updated: %s → %s", old, new)
     return old, new
 
 
