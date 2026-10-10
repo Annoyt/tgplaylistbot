@@ -23,7 +23,7 @@ aiogram==3.17.0
 # Music Services
 vk-api==11.9.9
 spotipy==2.24.0
-yt-dlp==2026.6.9
+# yt-dlp is NOT pinned here: it lives in a self-updating venv (see Dockerfile)
 cryptography==44.0.3
 
 # Audio Recognition

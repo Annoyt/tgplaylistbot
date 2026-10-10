@@ -1,3 +1,10 @@
+# Cap container logs (json-file has no limit by default and grows forever).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   # Self-hosted Telegram Bot API server — lifts the send limit from 50MB
   # (cloud) to 2GB and lets the bot pass local file paths. Secrets come from
@@ -6,6 +13,7 @@ services:
     image: aiogram/telegram-bot-api:latest
     container_name: musicbot-botapi
     restart: unless-stopped
+    logging: *default-logging
     environment:
       - TELEGRAM_API_ID=${TELEGRAM_API_ID}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
@@ -20,6 +28,7 @@ services:
     build: .
     container_name: musicbot-platform
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       - telegram-bot-api
     ports:

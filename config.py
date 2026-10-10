@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     audiobook_bitrate_kbps: int = 64       # mono speech; 64k is plenty
     audiobook_part_size_mb: int = 45       # target size per part when splitting
 
+    # ── yt-dlp self-update ────────────────────────────
+    # venv holding yt-dlp (set to /opt/ytdlp by the Dockerfile). Empty = no
+    # auto-update (local dev). "nightly" gets YouTube fixes days earlier.
+    ytdlp_venv: str = ""
+    ytdlp_channel: str = "nightly"         # "nightly" | "stable"
+    ytdlp_update_hours: int = 12
+
     # ── Database ──────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:////app/data/bot.db"
 

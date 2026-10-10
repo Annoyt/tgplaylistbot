@@ -97,6 +97,8 @@ async def run_bot() -> None:
     asyncio.create_task(playlist_queue_loop(bot))
     from bot.tasks import disk_cleanup_loop
     asyncio.create_task(disk_cleanup_loop(bot))
+    from bot.tasks import ytdlp_update_loop
+    asyncio.create_task(ytdlp_update_loop())
 
     logger.info("🤖 Bot starting...")
     await dp.start_polling(bot)

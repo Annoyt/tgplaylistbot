@@ -21,6 +21,68 @@ BROWSER_UA = (
 )
 
 
+def ytdlp_error(stderr: bytes, limit: int = 300) -> str:
+    """The actual ``ERROR:`` lines from yt-dlp stderr, for logging.
+
+    A plain ``stderr[-500:]`` tail often showed only the end of a long URL and
+    hid the reason. Each line is clipped so huge URLs can't drown it.
+    """
+    lines = stderr.decode(errors="replace").strip().splitlines()
+    errors = [ln for ln in lines if ln.startswith("ERROR:")] or lines[-3:]
+    return " | ".join(ln if len(ln) <= limit else ln[:limit] + "…" for ln in errors)
+
+
+async def ytdlp_version() -> str:
+    proc = await asyncio.create_subprocess_exec(
+        "yt-dlp", "--version",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    return out.decode().strip() or "?"
+
+
+async def update_ytdlp() -> tuple[str, str] | None:
+    """Upgrade yt-dlp inside its venv. Returns (old, new) versions or None.
+
+    The next yt-dlp subprocess picks up the new version — no restart needed.
+    Skipped when no venv is configured (local dev).
+    """
+    pip = Path(settings.ytdlp_venv) / "bin" / "pip"
+    if not settings.ytdlp_venv or not pip.exists():
+        return None
+
+    old = await ytdlp_version()
+    cmd = [str(pip), "install", "--upgrade", "--no-cache-dir",
+           "--disable-pip-version-check", "--quiet"]
+    if settings.ytdlp_channel == "nightly":
+        cmd.append("--pre")  # yt-dlp publishes nightlies to PyPI as pre-releases
+    cmd.append("yt-dlp[default]")
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logger.warning("yt-dlp update timed out")
+        return None
+    if proc.returncode != 0:
+        logger.warning("yt-dlp update failed: %s", stderr.decode(errors="replace")[-300:])
+        return None
+
+    new = await ytdlp_version()
+    if new != old:
+        logger.info("⬆️ yt-dlp updated: %s → %s", old, new)
+    else:
+        logger.info("yt-dlp is up to date (%s)", new)
+    return old, new
+
+
 async def search(query: str, count: int = 30) -> list[TrackInfo]:
     """Search YouTube for audio tracks."""
     cmd = [
@@ -113,7 +175,7 @@ async def download(
     stdout, stderr = await proc.communicate()
 
     if proc.returncode != 0:
-        logger.error("yt-dlp download failed: %s", stderr.decode())
+        logger.error("yt-dlp download failed: %s", ytdlp_error(stderr))
         return None
 
     ext = "flac" if quality == "flac" else "mp3"
@@ -157,7 +219,7 @@ async def download_from_url(url: str, download_dir: Path | None = None) -> str |
     _, stderr = await proc.communicate()
 
     if proc.returncode != 0:
-        logger.error("yt-dlp URL download failed: %s", stderr.decode()[-500:])
+        logger.error("yt-dlp URL download failed: %s", ytdlp_error(stderr))
         return None
 
     out_file = dl_dir / f"{uid}.mp3"
@@ -214,7 +276,7 @@ async def download_video_from_url(
     _, stderr = await proc.communicate()
 
     if proc.returncode != 0:
-        logger.error("yt-dlp video download failed: %s", stderr.decode()[-500:])
+        logger.error("yt-dlp video download failed: %s", ytdlp_error(stderr))
         return None
 
     # Output extension varies (mp4/mkv/webm); pick the produced file.

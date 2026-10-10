@@ -9,7 +9,9 @@ import re
 import tempfile
 import uuid
 from collections import OrderedDict
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
@@ -24,6 +26,39 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 URL_REGEX = re.compile(r'https?://\S+', re.IGNORECASE)
+
+# Google "share" links (share.google, g.co/kgs, google.*/search) open a search
+# results page, not a video — yt-dlp can't download them.
+GOOGLE_SHARE_REGEX = re.compile(
+    r'https?://(?:share\.google/|g\.co/kgs/|(?:www\.)?google\.[a-z.]+/search\?)',
+    re.IGNORECASE,
+)
+
+
+def _google_search_query(url: str) -> str | None:
+    """``q`` of a google.*/search URL, unwrapping the EU consent redirect."""
+    parts = urlsplit(url)
+    qs = parse_qs(parts.query)
+    if parts.netloc.startswith("consent.") and qs.get("continue"):
+        return _google_search_query(qs["continue"][0])
+    if parts.path == "/search" and qs.get("q"):
+        return qs["q"][0]
+    return None
+
+
+async def _resolve_google_query(url: str) -> str | None:
+    """Best effort: what a Google share link searches for (shown as a hint)."""
+    if query := _google_search_query(url):
+        return query
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=8) as client:
+            resp = await client.get(url, headers={"User-Agent": yt_svc.BROWSER_UA})
+    except httpx.HTTPError:
+        return None
+    for u in [*(r.url for r in resp.history), resp.url]:
+        if query := _google_search_query(str(u)):
+            return query
+    return None
 
 # Short token -> original URL, so video-download callbacks stay within Telegram's
 # 64-byte callback_data limit. Capped to avoid unbounded growth.
@@ -231,6 +266,20 @@ async def handle_link(message: Message) -> None:
 
     thread_id = None if message.chat.type != "private" else getattr(message, 'message_thread_id', None)
 
+    if GOOGLE_SHARE_REGEX.match(url):
+        query = await _resolve_google_query(url)
+        what = f"поиск Google «{query}»" if query else "поиск Google"
+        await message.bot.send_message(
+            chat_id=message.chat.id,
+            text=(
+                f"🔎 Это ссылка на {what}, а не на само видео — скачать её нельзя.\n\n"
+                "Откройте ролик и пришлите прямую ссылку на него "
+                "(YouTube, TikTok, Instagram…). Если ищете трек — просто напишите название."
+            ),
+            message_thread_id=thread_id,
+        )
+        return
+
     status = await message.bot.send_message(
         chat_id=message.chat.id,
         text=f"🔗 Скачиваю видео с {url[:40]}...",
@@ -247,6 +296,7 @@ async def handle_link(message: Message) -> None:
         message_thread_id=thread_id,
     )
 
+    audio_path = None
     try:
         audio_path = await yt_svc.download_from_url(url)
         if not audio_path:

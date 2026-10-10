@@ -23,6 +23,7 @@ import httpx
 
 from app.db.models import TrackInfo
 from config import settings
+from services.youtube import ytdlp_error
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,7 @@ async def _yt_download(track: TrackInfo, dl_dir: Path) -> str | None:
     )
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
-        logger.error("Audiobook YT download failed: %s", stderr.decode()[-500:])
+        logger.error("Audiobook YT download failed: %s", ytdlp_error(stderr))
         return None
 
     out = dl_dir / f"{uid}.mp3"
