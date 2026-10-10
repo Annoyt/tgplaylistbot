@@ -349,7 +349,7 @@ async def _ytdlp_fallback(url: str, dl_dir: Path, uid: str) -> str | None:
         "--audio-format", "mp3",
         "--audio-quality", "0",
         "--user-agent", BROWSER_UA,
-        "--extractor-args", "youtube:player_client=android_vr,android,ios",
+        "--extractor-args", "youtube:player_client=default,android_vr",
         "-4",
         "--hls-prefer-native",
         "--fragment-retries", "10",
