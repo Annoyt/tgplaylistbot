@@ -1,6 +1,6 @@
 """Admin panel router — protected by JWT auth."""
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from bot.handlers.admin import get_global_settings, update_global_setting
 from fastapi.templating import Jinja2Templates
@@ -8,9 +8,18 @@ from fastapi.templating import Jinja2Templates
 from app.auth.dependencies import get_current_user
 from app.db.database import get_db_ctx
 from app.auth.service import hash_password
+from config import settings as app_settings
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 templates = Jinja2Templates(directory="app/templates")
+
+
+def _cookies_status() -> dict:
+    """Info about the stored cookies.txt for the dashboard."""
+    p = app_settings.cookies_path
+    if p.exists() and p.stat().st_size > 0:
+        return {"present": True, "size": p.stat().st_size}
+    return {"present": False, "size": 0}
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -64,7 +73,12 @@ async def musicbot_settings(request: Request, user: dict = Depends(get_current_u
         bot_settings = {row["key"]: row["value"] for row in settings_rows}
     return templates.TemplateResponse(
         "admin/musicbot.html",
-        {"request": request, "user": user, "bot_settings": bot_settings},
+        {
+            "request": request,
+            "user": user,
+            "bot_settings": bot_settings,
+            "cookies": _cookies_status(),
+        },
     )
 
 
@@ -93,6 +107,27 @@ async def save_musicbot_settings(request: Request, user: dict = Depends(get_curr
         await db.commit()
 
     return RedirectResponse(url="/admin/musicbot?saved=1", status_code=303)
+
+
+@router.post("/musicbot/cookies")
+async def upload_cookies(
+    user: dict = Depends(get_current_user),
+    cookies_file: UploadFile = File(...),
+):
+    """Store an uploaded cookies.txt into the persisted data volume.
+
+    Used by yt-dlp to bypass Instagram (and as a VK/YouTube fallback). Lives at
+    settings.cookies_path (/app/data/cookies.txt), which now survives restarts.
+    """
+    raw = await cookies_file.read()
+    head = raw[:64].decode("utf-8", errors="ignore").lstrip().lower()
+    if not head.startswith("# netscape") and "# http cookie file" not in head:
+        return RedirectResponse(url="/admin/musicbot?cookies=badformat", status_code=303)
+
+    dest = app_settings.cookies_path
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(raw)
+    return RedirectResponse(url="/admin/musicbot?cookies=ok", status_code=303)
 
 
 @router.get("/weatherbot", response_class=HTMLResponse)

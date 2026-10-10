@@ -1,6 +1,7 @@
 .git
 .env
 .env.*
+cookies.txt
 .agents/
 .gemini/
 *.md
@@ -15,3 +16,5 @@ docs/
 mkdocs.yml
 serve-docs.sh
 .github/
+deploy.sh
+downloads/

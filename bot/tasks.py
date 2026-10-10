@@ -6,6 +6,43 @@ from bot.handlers.admin import get_global_settings
 
 logger = logging.getLogger(__name__)
 
+
+async def disk_cleanup_loop(bot=None):
+    """Every 10 min, delete leftover download files older than an hour.
+
+    Prevents the download dir from filling the disk when a send fails or the
+    bot restarts mid-transfer (videos can be up to 2GB on the local Bot API).
+    """
+    from services.downloader import cleanup_download_dir
+
+    while True:
+        try:
+            removed = cleanup_download_dir(older_than_sec=3600)
+            if removed:
+                logger.info("Disk cleanup: removed %d stale download(s)", removed)
+        except Exception as e:
+            logger.warning("Disk cleanup failed: %s", e)
+        await asyncio.sleep(600)
+
+
+async def ytdlp_update_loop():
+    """Upgrade yt-dlp on startup and then every ``ytdlp_update_hours``.
+
+    A stale yt-dlp was the main cause of broken YouTube downloads: YouTube
+    changes things every few weeks and only fresh releases keep up.
+    """
+    from config import settings
+    from services.youtube import update_ytdlp
+
+    await asyncio.sleep(30)  # let polling start first
+    while True:
+        try:
+            await update_ytdlp()
+        except Exception as e:
+            logger.warning("yt-dlp update loop error: %s", e)
+        await asyncio.sleep(max(1, settings.ytdlp_update_hours) * 3600)
+
+
 async def cleanup_loop(bot):
     """Periodically check for old pending tracks, and process scheduled track routing."""
     from bot.handlers.forum import _get_topic_map, _save_topic

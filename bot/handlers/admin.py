@@ -60,6 +60,49 @@ async def cmd_setadmin(message: Message) -> None:
 
 
 
+@router.message(Command("stats"))
+async def cmd_stats(message: Message) -> None:
+    """Show usage stats (admin only): users, searches, downloads, top queries."""
+    db = await get_db()
+    try:
+        row = await db.execute("SELECT is_admin FROM users WHERE id = ?", (message.from_user.id,))
+        res = await row.fetchone()
+        if not (res and res["is_admin"] == 1):
+            return
+
+        async def scalar(sql: str) -> int:
+            cur = await db.execute(sql)
+            r = await cur.fetchone()
+            return r["n"] if r else 0
+
+        users = await scalar("SELECT COUNT(*) AS n FROM users")
+        admins = await scalar("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1")
+        searches = await scalar("SELECT COUNT(*) AS n FROM search_sessions")
+        downloads = await scalar("SELECT COUNT(*) AS n FROM cached_tracks")
+        downloads7 = await scalar(
+            "SELECT COUNT(*) AS n FROM cached_tracks WHERE created_at >= datetime('now','-7 days')"
+        )
+        cur = await db.execute(
+            "SELECT query, COUNT(*) AS c FROM search_sessions "
+            "GROUP BY lower(query) ORDER BY c DESC, max(created_at) DESC LIMIT 10"
+        )
+        top_rows = await cur.fetchall()
+    finally:
+        await db.close()
+
+    top = "\n".join(
+        f"  {i}. {r['query'][:40]} — {r['c']}" for i, r in enumerate(top_rows, 1)
+    ) or "  —"
+    await message.answer(
+        "📊 <b>Статистика бота</b>\n\n"
+        f"👥 Пользователей: <b>{users}</b> (админов: {admins})\n"
+        f"🔍 Поисков (в истории сессий): <b>{searches}</b>\n"
+        f"⬇️ Скачано треков (кэш): <b>{downloads}</b> (за 7 дней: {downloads7})\n\n"
+        f"🔝 <b>Топ запросов:</b>\n{top}",
+        parse_mode="HTML",
+    )
+
+
 async def get_global_settings() -> GlobalSettings:
     db = await get_db()
     try:
@@ -143,3 +186,79 @@ async def cmd_set_global(message: Message) -> None:
 
     await update_global_setting(key, value)
     await message.answer(f"✅ Настройка `{key}` изменена на `{value}`", parse_mode="Markdown")
+
+
+@router.message(Command("clear_cache"))
+async def cmd_clear_cache(message: Message) -> None:
+    """Clear the cached_tracks table."""
+    db = await get_db()
+    is_admin = False
+    try:
+        row = await db.execute("SELECT is_admin FROM users WHERE id = ?", (message.from_user.id,))
+        res = await row.fetchone()
+        if res and res["is_admin"] == 1:
+            is_admin = True
+    finally:
+        await db.close()
+
+    if not is_admin:
+        return
+
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM cached_tracks")
+        await db.commit()
+        await message.answer("♻️ **Кеш поиска очищен.** Теперь все треки будут скачиваться заново с применением последних исправлений.", parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при очистке кеша: {e}")
+    finally:
+        await db.close()
+
+@router.message(F.document)
+async def handle_cookies_upload(message: Message) -> None:
+    """Accept cookies.txt from admin to help yt-dlp bypass Instagram/YouTube blocks."""
+    if message.document.file_name != "cookies.txt":
+        return
+
+    is_admin = False
+    db = await get_db()
+    try:
+        row = await db.execute("SELECT is_admin FROM users WHERE id = ?", (message.from_user.id,))
+        res = await row.fetchone()
+        if res and res["is_admin"] == 1:
+            is_admin = True
+    finally:
+        await db.close()
+
+    if not is_admin:
+        await message.answer(
+            "🔒 Загрузка `cookies.txt` доступна только администраторам.\n\n"
+            "Используй `/setadmin <пароль>`, чтобы получить права.",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Save into the persisted data volume so it survives container restarts.
+    dest = settings.cookies_path
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        await message.bot.download(message.document, str(dest))
+        # Sanity-check: Netscape cookie jars start with a recognizable header.
+        head = dest.read_text(encoding="utf-8", errors="ignore").lstrip()[:64].lower()
+        if not head.startswith("# netscape") and "# http cookie file" not in head:
+            await message.answer(
+                "⚠️ Файл сохранён, но не похож на cookies в формате Netscape.\n\n"
+                "Экспортируйте cookies из браузера (например, расширением "
+                "«Get cookies.txt LOCALLY») и пришлите файл `cookies.txt` заново.",
+                parse_mode="Markdown",
+            )
+            return
+        await message.answer(
+            "🍪 Файл `cookies.txt` сохранён в постоянное хранилище.\n\n"
+            "Теперь он используется для обхода блокировок Instagram и YouTube "
+            "и переживёт перезапуск бота.",
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при сохранении файла: {e}")
+
