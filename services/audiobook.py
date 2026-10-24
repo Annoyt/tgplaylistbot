@@ -14,21 +14,25 @@ import json
 import logging
 import os
 import re
+import shutil
 import uuid
 from difflib import SequenceMatcher
-from glob import glob
+from glob import escape as glob_escape, glob
 from pathlib import Path
 
 import httpx
 
 from app.db.models import TrackInfo
 from config import settings
-from services.youtube import ytdlp_error
+from services.youtube import BROWSER_UA, NOT_LIVE, ytdlp_error
+from services.youtube import _run as yt_run
 
 logger = logging.getLogger(__name__)
 
 # A result shorter than this is treated as an excerpt/clip, not a full book.
 _MIN_AUDIOBOOK_SEC = 12 * 60
+_BOOK_DOWNLOAD_TIMEOUT_SEC = 3 * 60 * 60
+_CHAPTER_ATTEMPTS = 3
 
 _LIBRIVOX_API = "https://librivox.org/api/feed/audiobooks"
 
@@ -44,12 +48,15 @@ _STOP = ("аудиокнига", "аудио", "книга", "audiobook", "full"
          "слушать", "онлайн", "official", "channel")
 
 
+# Whole words only: plain substring removal turned "Fullmetal Alchemist" into
+# "metal alchemist" and "Книгами" into "ми".
+_STOP_RE = re.compile(r"(?<!\w)(?:" + "|".join(sorted(_STOP, key=len, reverse=True)) + r")(?!\w)")
+
+
 def _normalize(s: str) -> str:
     s = _NOISE_RE.sub(" ", s.lower())
     s = _NON_WORD_RE.sub(" ", s)
-    s = _WS_RE.sub(" ", s).strip()
-    for w in _STOP:
-        s = s.replace(w, " ")
+    s = _STOP_RE.sub(" ", s)
     return _WS_RE.sub(" ", s).strip()
 
 
@@ -127,16 +134,18 @@ async def _yt_download(track: TrackInfo, dl_dir: Path) -> str | None:
         "--fragment-retries", "15",
         "--retries", "5",
         "--no-part",
+        # Same YouTube flags as every other download (see services/youtube.py).
+        "--user-agent", BROWSER_UA,
+        "--extractor-args", "youtube:player_client=default,android_vr",
+        "-4",
+        *NOT_LIVE,
         "-o", out_tmpl,
     ]
     cmd.extend(settings.cookie_args())
     cmd.append(url)
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
+    rc, _, stderr = await yt_run(*cmd, timeout=_BOOK_DOWNLOAD_TIMEOUT_SEC)
+    if rc != 0:
         logger.error("Audiobook YT download failed: %s", ytdlp_error(stderr))
         return None
 
@@ -215,17 +224,11 @@ async def _librivox_download(track: TrackInfo, dl_dir: Path) -> str | None:
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
             for i, url in enumerate(urls):
                 dest = parts_dir / f"{i:04d}.mp3"
-                try:
-                    resp = await client.get(url)
-                except Exception as e:
-                    logger.warning("LibriVox chapter %s failed: %s", i, e)
-                    continue
-                if resp.status_code != 200:
-                    logger.warning("LibriVox chapter %s -> HTTP %s", i, resp.status_code)
-                    continue
-                await asyncio.to_thread(dest.write_bytes, resp.content)
-                if dest.stat().st_size > 0:
-                    part_files.append(dest)
+                if not await _fetch_chapter(client, url, dest, i):
+                    # A book silently missing chapters is worse than an error.
+                    logger.error("LibriVox chapter %s failed %s times; giving up", i, _CHAPTER_ATTEMPTS)
+                    return None
+                part_files.append(dest)
 
         if not part_files:
             return None
@@ -250,15 +253,27 @@ async def _librivox_download(track: TrackInfo, dl_dir: Path) -> str | None:
             return None
         return str(out) if out.exists() and out.stat().st_size > 0 else None
     finally:
-        # Clean up chapter parts; keep only the final concatenated file.
-        for p in part_files:
-            p.unlink(missing_ok=True)
-        for leftover in (parts_dir / "concat.txt",):
-            leftover.unlink(missing_ok=True)
+        # Remove the whole parts dir (also half-written chapters): the hourly
+        # cleanup only removes files, so a leftover dir stayed forever.
+        await asyncio.to_thread(shutil.rmtree, parts_dir, ignore_errors=True)
+
+
+async def _fetch_chapter(client: httpx.AsyncClient, url: str, dest: Path, index: int) -> bool:
+    """Stream one chapter to ``dest`` (not into memory), with retries."""
+    for attempt in range(1, _CHAPTER_ATTEMPTS + 1):
         try:
-            parts_dir.rmdir()
-        except OSError:
-            pass
+            async with client.stream("GET", url) as resp:
+                if resp.status_code == 200:
+                    with dest.open("wb") as f:
+                        async for chunk in resp.aiter_bytes(1 << 16):
+                            f.write(chunk)
+                    if dest.stat().st_size > 0:
+                        return True
+                logger.warning("LibriVox chapter %s -> HTTP %s (attempt %s)", index, resp.status_code, attempt)
+        except Exception as e:
+            logger.warning("LibriVox chapter %s failed (attempt %s): %s", index, attempt, e)
+        await asyncio.sleep(attempt)
+    return False
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -357,7 +372,9 @@ async def prepare_parts(file_path: str) -> list[str]:
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
         logger.error("Audiobook split failed: %s", stderr.decode()[-500:])
+        for leftover in glob(f"{glob_escape(base)}_part_*.mp3"):   # partial parts
+            os.remove(leftover)
         return [file_path]
 
-    parts = sorted(glob(f"{base}_part_*.mp3"))
+    parts = sorted(glob(f"{glob_escape(base)}_part_*.mp3"))
     return parts or [file_path]

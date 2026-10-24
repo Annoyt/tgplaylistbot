@@ -115,7 +115,11 @@ async def download_hls(
             failed = len(results) - success
             logger.info(f"HLS: Downloaded {success}/{len(segments)} segments ({failed} failed)")
 
-            if success == 0:
+            if failed:
+                # A gap is worse than a failure: the gapped MP3 would be sent and
+                # its file_id cached for every later request. Failing lets the
+                # caller fall back to yt-dlp instead.
+                logger.error(f"HLS: {failed} segment(s) failed, not returning a gapped file")
                 return False
 
         # Step 4: Collect successfully downloaded segment files
@@ -280,19 +284,26 @@ def _parse_media_playlist(content: str, base_url: str) -> list[HLSSegment]:
     current_key_url: str | None = None
     current_iv: bytes | None = None
     seg_index = 0
+    media_seq = 0  # RFC 8216: the implicit IV is the media sequence number
 
     for i, line in enumerate(lines):
         line = line.strip()
 
+        if line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
+            try:
+                media_seq = int(line.split(":", 1)[1])
+            except ValueError:
+                pass
+
         # Track encryption changes
-        if line.startswith("#EXT-X-KEY"):
+        elif line.startswith("#EXT-X-KEY"):
             method_m = re.search(r"METHOD=([A-Z0-9-]+)", line)
             uri_m = re.search(r'URI="([^"]+)"', line)
-            iv_m = re.search(r"IV=0x([0-9a-fA-F]+)", line)
+            iv_m = re.search(r"IV=0[xX]([0-9a-fA-F]+)", line)   # "0X" is valid too
 
             current_key_method = method_m.group(1) if method_m else "NONE"
             current_key_url = _resolve_url(uri_m.group(1), base_url) if uri_m else None
-            current_iv = bytes.fromhex(iv_m.group(1)) if iv_m else None
+            current_iv = _parse_iv(iv_m.group(1)) if iv_m else None
 
             if current_key_method == "NONE":
                 current_key_url = None
@@ -308,10 +319,12 @@ def _parse_media_playlist(content: str, base_url: str) -> list[HLSSegment]:
                 if seg_line and not seg_line.startswith("#"):
                     seg_url = _resolve_url(seg_line, base_url)
 
-                    # Default IV = segment sequence number (big-endian 16 bytes)
+                    # Default IV = media sequence number (big-endian 16 bytes).
+                    # Using the 0-based playlist position garbled the first block
+                    # of every segment whenever MEDIA-SEQUENCE wasn't 0.
                     iv = current_iv
                     if current_key_method == "AES-128" and iv is None:
-                        iv = seg_index.to_bytes(16, byteorder="big")
+                        iv = (media_seq + seg_index).to_bytes(16, byteorder="big")
 
                     segments.append(HLSSegment(
                         url=seg_url,
@@ -421,6 +434,14 @@ async def _concat_with_ffmpeg(seg_files: list[Path], output_path: Path) -> bool:
         logger.error(f"ffmpeg concat failed: {stderr.decode()[-500:]}")
         return False
     return output_path.exists() and output_path.stat().st_size > 0
+
+
+def _parse_iv(hex_digits: str) -> bytes | None:
+    """128-bit IV from hex (any length, e.g. odd or without leading zeros)."""
+    try:
+        return int(hex_digits, 16).to_bytes(16, byteorder="big")
+    except (ValueError, OverflowError):
+        return None
 
 
 def _resolve_url(url: str, base_url: str) -> str:

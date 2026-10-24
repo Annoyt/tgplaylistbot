@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import sys
 import time
 import uuid
@@ -25,6 +26,13 @@ BROWSER_UA = (
 )
 
 
+# Live streams never end, and --max-filesize is checked per HTTP response, not
+# across HLS/DASH fragments: a 24/7 "lofi radio" result filled the disk forever.
+NOT_LIVE = ["--match-filter", "!is_live", "--no-progress"]
+AUDIO_TIMEOUT_SEC = 15 * 60
+VIDEO_TIMEOUT_SEC = 60 * 60   # up to 2 GB through the local Bot API
+
+
 def ytdlp_error(stderr: bytes, limit: int = 300) -> str:
     """The actual ``ERROR:`` lines from yt-dlp stderr, for logging.
 
@@ -37,31 +45,69 @@ def ytdlp_error(stderr: bytes, limit: int = 300) -> str:
 
 
 async def ytdlp_version() -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "yt-dlp", "--version",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    out, _ = await proc.communicate()
+    _, out, _ = await _run("yt-dlp", "--version", timeout=30)
     return out.decode().strip() or "?"
 
 
+def _kill(proc) -> None:
+    """Kill the process and its children (yt-dlp spawns ffmpeg)."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)   # own session, see _run
+    except (AttributeError, TypeError, ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 async def _run(*cmd: str, timeout: float = 300) -> tuple[int, bytes, bytes]:
+    """Run a command with a timeout; on timeout or cancellation kill it all."""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        _kill(proc)
         await proc.wait()
         return -1, b"", b"timed out"
+    except asyncio.CancelledError:
+        _kill(proc)   # the handler went away; don't leave yt-dlp downloading
+        raise
     return proc.returncode, out, err
 
 
+_update_lock = asyncio.Lock()
+
+
 async def update_ytdlp() -> tuple[str, str] | None:
+    """Upgrade yt-dlp if a newer release exists (one upgrade at a time)."""
+    async with _update_lock:
+        return await _update_ytdlp()
+
+
+def _heal_current(root: Path, current: Path) -> None:
+    """Repoint a dangling ``current`` at the newest venv that has yt-dlp.
+
+    ``current.exists()`` is False for a dangling link, so without this the
+    updater gave up forever and every yt-dlp call failed until a redeploy.
+    """
+    if not current.is_symlink() or current.exists():
+        return
+    venvs = sorted((d for d in root.iterdir() if (d / "bin" / "yt-dlp").exists()),
+                   key=lambda d: d.stat().st_mtime, reverse=True)
+    if venvs:
+        tmp = root / "current.heal"
+        tmp.unlink(missing_ok=True)
+        tmp.symlink_to(venvs[0].name)
+        os.replace(tmp, current)
+        logger.warning("yt-dlp: 'current' was dangling, repointed at %s", venvs[0].name)
+
+
+async def _update_ytdlp() -> tuple[str, str] | None:
     """Upgrade yt-dlp if a newer release exists. Returns (old, new) or None.
 
     An in-place ``pip install -U`` deletes the yt-dlp entrypoint for a few
@@ -74,6 +120,8 @@ async def update_ytdlp() -> tuple[str, str] | None:
         return None
     root = Path(settings.ytdlp_dir)
     current = root / "current"
+    if root.is_dir():
+        _heal_current(root, current)
     if not current.exists():
         return None
 
@@ -113,9 +161,10 @@ async def update_ytdlp() -> tuple[str, str] | None:
     tmp.symlink_to(new_venv.name)
     os.replace(tmp, current)  # atomic: a download sees the old or the new, never neither
 
-    for d in root.iterdir():  # keep only the new venv and the one just replaced
-        if d.is_dir() and not d.is_symlink() and d not in (new_venv, previous):
-            shutil.rmtree(d, ignore_errors=True)
+    stale = [d for d in root.iterdir()   # keep only the new venv and the one just replaced
+             if d.is_dir() and not d.is_symlink() and d not in (new_venv, previous)]
+    for d in stale:
+        await asyncio.to_thread(shutil.rmtree, d, ignore_errors=True)
     logger.info("⬆️ yt-dlp updated: %s → %s", old, new)
     return old, new
 
@@ -130,12 +179,7 @@ async def search(query: str, count: int = 30) -> list[TrackInfo]:
         "--no-download",
         "--quiet",
     ]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    stdout, _ = await proc.communicate()
+    _, stdout, _ = await _run(*cmd, timeout=60)
 
     tracks: list[TrackInfo] = []
     for line in stdout.decode().strip().split("\n"):
@@ -187,6 +231,7 @@ async def download(
             "-4",
             "-o", output_template,
             "--max-filesize", f"{settings.max_file_size_mb}m",
+            *NOT_LIVE,
             url,
         ]
     else:
@@ -201,17 +246,12 @@ async def download(
             "-4",
             "-o", output_template,
             "--max-filesize", f"{settings.max_file_size_mb}m",
+            *NOT_LIVE,
             url,
         ]
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-
-    if proc.returncode != 0:
+    rc, _, stderr = await _run(*cmd, timeout=AUDIO_TIMEOUT_SEC)
+    if rc != 0:
         logger.error("yt-dlp download failed: %s", ytdlp_error(stderr))
         return None
 
@@ -245,17 +285,15 @@ async def download_from_url(url: str, download_dir: Path | None = None) -> str |
         "-4",
         "-o", output_template,
         "--max-filesize", f"{settings.max_file_size_mb}m",
+        # watch?v=X&list=PL…: without this yt-dlp walked the whole playlist and
+        # returned item 1 instead of X.
+        "--no-playlist",
+        *NOT_LIVE,
     ]
     cmd.extend(settings.cookie_args())
     cmd.append(url)
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-
-    if proc.returncode != 0:
+    rc, _, stderr = await _run(*cmd, timeout=AUDIO_TIMEOUT_SEC)
+    if rc != 0:
         logger.error("yt-dlp URL download failed: %s", ytdlp_error(stderr))
         return None
 
@@ -308,18 +346,13 @@ async def download_video_from_url(
         "-4",
         "-o", output_template,
         "--max-filesize", f"{limit_mb}m",
+        *NOT_LIVE,
     ]
     cmd.extend(settings.cookie_args())
     cmd.append(url)
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-
-    if proc.returncode != 0:
+    rc, _, stderr = await _run(*cmd, timeout=VIDEO_TIMEOUT_SEC)
+    if rc != 0:
         logger.error("yt-dlp video download failed: %s", ytdlp_error(stderr))
         return None
 

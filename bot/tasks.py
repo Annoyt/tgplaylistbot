@@ -69,7 +69,7 @@ async def cleanup_loop(bot):
                         if winning_emoji == "👎":
                             try:
                                 await bot.delete_message(chat_id, pt["audio_msg_id"])
-                            except: pass
+                            except Exception: pass
                         else:
                             # Route track
                             track_data = json.loads(pt["track_json"])
@@ -108,7 +108,7 @@ async def cleanup_loop(bot):
                             # Delete original audio message
                             try:
                                 await bot.delete_message(chat_id, pt["audio_msg_id"])
-                            except: pass
+                            except Exception: pass
 
                     except Exception as route_exec_err:
                         logger.error(f"Error executing route for track {pt['id']}: {route_exec_err}")
@@ -118,19 +118,19 @@ async def cleanup_loop(bot):
                         if pt["search_msg_id"] and pt["search_msg_id"] > 0:
                             try:
                                 await bot.delete_message(pt["chat_id"], pt["search_msg_id"])
-                            except: pass
+                            except Exception: pass
 
                         # Cleanup original text/link message
                         if "original_msg_id" in pt.keys() and pt["original_msg_id"] and pt["original_msg_id"] > 0:
                             try:
                                 await bot.delete_message(pt["chat_id"], pt["original_msg_id"])
-                            except: pass
+                            except Exception: pass
 
                         # Finally remove from pending to prevent poison loop
                         try:
                             await db.execute("DELETE FROM pending_tracks WHERE id = ?", (pt["id"],))
                             await db.commit()
-                        except: pass
+                        except Exception: pass
             except Exception as routing_err:
                 logger.error(f"Routing error: {routing_err}")
 
@@ -144,16 +144,16 @@ async def cleanup_loop(bot):
                 for pt in expired_tracks:
                     try:
                         await bot.delete_message(pt["chat_id"], pt["audio_msg_id"])
-                    except: pass
+                    except Exception: pass
                     if pt["search_msg_id"] and pt["search_msg_id"] > 0:
                         try:
                             await bot.delete_message(pt["chat_id"], pt["search_msg_id"])
-                        except: pass
+                        except Exception: pass
 
                     if "original_msg_id" in pt.keys() and pt["original_msg_id"] and pt["original_msg_id"] > 0:
                         try:
                             await bot.delete_message(pt["chat_id"], pt["original_msg_id"])
-                        except: pass
+                        except Exception: pass
 
                     await db.execute("DELETE FROM pending_tracks WHERE id = ?", (pt["id"],))
                     await db.commit()
@@ -165,7 +165,7 @@ async def cleanup_loop(bot):
         finally:
             try:
                 await db.close()
-            except: pass
+            except Exception: pass
 
         # Check every 5 seconds for fast routing
         await asyncio.sleep(5)
@@ -187,22 +187,25 @@ async def playlist_queue_loop(bot):
 
     batch_count = 0
 
+    # Rows left 'processing' by a restart mid-item (every deploy restarts the
+    # bot) were never picked up again: put them back in the queue.
+    try:
+        async with get_db_ctx() as db:
+            await db.execute("UPDATE playlist_queue SET status = 'pending' WHERE status = 'processing'")
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Playlist Queue: could not requeue interrupted items: {e}")
+
     while True:
+        task_id = None
         try:
             async with get_db_ctx() as db:
                 row = await db.execute("SELECT * FROM playlist_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1")
                 task = await row.fetchone()
-
-                if not task:
-                    pass
-                else:
+                if task:
                     task_id = task["id"]
-                    chat_id = task["chat_id"]
-                    user_id = task["user_id"]
-                    orig_msg_id = task["original_msg_id"]
-                    track_data = json.loads(task["track_json"])
-                    track = TrackInfo(**track_data)
-
+                    # Claim before parsing: an unreadable row used to raise here
+                    # and be picked again every 10s, blocking the whole queue.
                     await db.execute("UPDATE playlist_queue SET status = 'processing' WHERE id = ?", (task_id,))
                     await db.commit()
 
@@ -210,7 +213,18 @@ async def playlist_queue_loop(bot):
                 await asyncio.sleep(10)
                 continue
 
-            cached_file_id = await get_cached_file_id(track.artist, track.title)
+            chat_id = task["chat_id"]
+            user_id = task["user_id"]
+            orig_msg_id = task["original_msg_id"]
+            try:
+                track_data = json.loads(task["track_json"])
+                track = TrackInfo(**track_data)
+            except (ValueError, TypeError) as e:
+                logger.error(f"Playlist Queue: dropping unreadable item {task_id}: {e}")
+                await _set_queue_status(task_id, "failed")
+                continue
+
+            cached_file_id = await get_cached_file_id(track.artist, track.title, track.duration)
             audio_msg = None
             caption_text = f"{track.source_icon} {track.artist} – {track.title}\n👤 #{user_id} (Плейлист)"
 
@@ -261,7 +275,7 @@ async def playlist_queue_loop(bot):
                             message_thread_id=None
                         )
                         if audio_msg and audio_msg.audio:
-                            await save_cached_file_id(track.artist, track.title, audio_msg.audio.file_id)
+                            await save_cached_file_id(track.artist, track.title, track.duration, audio_msg.audio.file_id)
                     except Exception as send_e:
                         logger.error(f"Playlist Queue: Failed to send downloaded track: {send_e}")
                     finally:
@@ -280,4 +294,16 @@ async def playlist_queue_loop(bot):
 
         except Exception as e:
             logger.error(f"Error in playlist_queue_loop: {e}")
+            if task_id is not None:
+                await _set_queue_status(task_id, "failed")  # don't leave it 'processing'
             await asyncio.sleep(10)
+
+
+async def _set_queue_status(task_id: int, status: str) -> None:
+    from app.db.database import get_db_ctx
+    try:
+        async with get_db_ctx() as db:
+            await db.execute("UPDATE playlist_queue SET status = ? WHERE id = ?", (status, task_id))
+            await db.commit()
+    except Exception as e:
+        logger.error(f"Playlist Queue: could not mark item {task_id} {status}: {e}")

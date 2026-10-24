@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Global lock and timestamp to enforce download delay
 _download_lock = asyncio.Lock()
-_last_download_time = 0.0
+_last_download_time = float("-inf")  # monotonic clock; no delay before the first
 
 async def download_track(
     track: TrackInfo,
@@ -34,14 +34,14 @@ async def download_track(
     async with _download_lock:
         g_settings = await get_global_settings()
         delay = g_settings.download_delay_sec
-        now = time.time()
+        now = time.monotonic()
         elapsed = now - _last_download_time
         if elapsed < delay:
             wait_time = delay - elapsed
             logger.info(f"Enforcing download delay, sleeping for {wait_time:.1f}s")
             await asyncio.sleep(wait_time)
 
-        _last_download_time = time.time()
+        _last_download_time = time.monotonic()
 
     # Lock released, now download
     file_path = None
@@ -67,10 +67,11 @@ async def download_track(
         return None
 
     # Apply ID3 Metadata using a fast FFmpeg copy pass
-    tagged_path = file_path + ".tagged.mp3" if file_path.endswith(".mp3") else file_path + ".tagged"
-    # Ensure safe strings for arguments
-    safe_title = track.title.replace('"', '\\"')
-    safe_artist = track.artist.replace('"', '\\"')
+    # Keep the real extension last: ffmpeg picks the container from it, and
+    # "x.flac.tagged" failed ("Unable to choose an output format"), so FLAC
+    # never got tags.
+    root, ext = os.path.splitext(file_path)
+    tagged_path = f"{root}.tagged{ext}"
     cmd = [
         "ffmpeg", "-y", "-i", file_path,
         "-c", "copy",

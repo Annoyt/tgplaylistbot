@@ -21,12 +21,24 @@ _WAV_RATE = 44100
 # <1 slows down (reverses a sped-up edit), >1 speeds up (reverses a slowed edit).
 _SPEED_FACTORS = (0.8, 1.25, 0.7, 1.5)
 
+# Shazam needs ~10-20 s; converting the whole input made a 45-min link or a
+# 2 GB podcast into hundreds of MB of WAV (x up to 4 speed variants).
+_WAV_MAX_SEC = 90
+_ACOUSTID_TIMEOUT_SEC = 20
+
+
+def _tmp_wav() -> str:
+    fd, path = tempfile.mkstemp(suffix=".wav")  # mktemp is race-prone
+    os.close(fd)
+    return path
+
 
 async def _convert_to_wav(input_path: str) -> str:
     """Convert any audio/video to WAV using ffmpeg."""
-    output = tempfile.mktemp(suffix=".wav")
+    output = _tmp_wav()
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y", "-i", input_path, "-ar", str(_WAV_RATE), "-ac", "1", "-f", "wav", output,
+        "ffmpeg", "-y", "-i", input_path, "-vn", "-t", str(_WAV_MAX_SEC),
+        "-ar", str(_WAV_RATE), "-ac", "1", "-f", "wav", output,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -39,7 +51,7 @@ async def _speed_variant(wav_path: str, factor: float) -> str | None:
 
     Returns the path to a new WAV, or None if ffmpeg produced nothing.
     """
-    output = tempfile.mktemp(suffix=".wav")
+    output = _tmp_wav()
     # asetrate reinterprets the sample rate (changes tempo+pitch); aresample
     # brings it back to a standard rate so Shazam/ffmpeg read it correctly.
     new_rate = int(_WAV_RATE * factor)
@@ -57,6 +69,19 @@ async def _speed_variant(wav_path: str, factor: float) -> str | None:
     return None
 
 
+def _shazam_album(track: dict) -> str:
+    """Album name from a Shazam track, "" when absent.
+
+    Indexing ``sections[0].metadata[0]`` raised on an empty list, and the broad
+    except then threw away an otherwise successful recognition.
+    """
+    for section in track.get("sections") or []:
+        for meta in section.get("metadata") or []:
+            if meta.get("text"):
+                return meta["text"]
+    return ""
+
+
 async def recognize_shazam(audio_path: str) -> RecognizedTrack | None:
     """Recognize audio via shazamio."""
     try:
@@ -72,9 +97,7 @@ async def recognize_shazam(audio_path: str) -> RecognizedTrack | None:
         return RecognizedTrack(
             title=track.get("title", "Unknown"),
             artist=track.get("subtitle", "Unknown"),
-            album=track.get("sections", [{}])[0].get("metadata", [{}])[0].get("text", "")
-            if track.get("sections")
-            else "",
+            album=_shazam_album(track),
             cover_url=track.get("images", {}).get("coverart", ""),
         )
     except Exception as e:
@@ -87,7 +110,12 @@ async def recognize_acoustid(audio_path: str, api_key: str) -> RecognizedTrack |
     try:
         import acoustid
 
-        results = acoustid.match(api_key, audio_path)
+        # Synchronous (fpcalc + HTTP): off the event loop, and bounded, or one
+        # stalled lookup froze the bot and the web app together.
+        results = await asyncio.wait_for(
+            asyncio.to_thread(lambda: list(acoustid.match(api_key, audio_path, timeout=15))),
+            _ACOUSTID_TIMEOUT_SEC,
+        )
         for score, recording_id, title, artist in results:
             if score > 0.5:
                 return RecognizedTrack(
