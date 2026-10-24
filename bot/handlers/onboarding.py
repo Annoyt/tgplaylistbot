@@ -1,6 +1,7 @@
 """Handles user joining, onboarding, and nickname configuration."""
 
 import logging
+from html import escape
 from aiogram import Router, F
 from aiogram.types import Message, ChatMemberUpdated
 from aiogram.filters import ChatMemberUpdatedFilter, JOIN_TRANSITION, Command
@@ -63,7 +64,7 @@ async def on_user_join(event: ChatMemberUpdated) -> None:
     # Telegram implicitly sets message_thread_id=None for the General topic
     await event.bot.send_message(
         event.chat.id,
-        f"Добро пожаловать, {new_member.first_name}! 🎉\n\n"
+        f"Добро пожаловать, {escape(new_member.first_name)}! 🎉\n\n"
         "Как мне к тебе обращаться? Установи свой никнейм командой:\n"
         "<code>/nickname ТвойНик</code>",
         parse_mode="HTML"
@@ -79,7 +80,7 @@ async def cmd_nickname(message: Message) -> None:
     if len(args) < 2:
         current_nick = await _get_nickname(message.from_user.id, message.from_user.first_name)
         await message.answer(
-            f"Сейчас я обращаюсь к тебе так: <b>{current_nick}</b>\n\n"
+            f"Сейчас я обращаюсь к тебе так: <b>{escape(current_nick)}</b>\n\n"
             "Чтобы изменить, напиши: <code>/nickname НовоеИмя</code>",
             parse_mode="HTML"
         )
@@ -87,4 +88,4 @@ async def cmd_nickname(message: Message) -> None:
 
     new_nickname = args[1][:50] # Limit length
     await _update_nickname(message.from_user.id, new_nickname)
-    await message.answer(f"Отлично! Теперь я буду обращаться к тебе: <b>{new_nickname}</b>", parse_mode="HTML")
+    await message.answer(f"Отлично! Теперь я буду обращаться к тебе: <b>{escape(new_nickname)}</b>", parse_mode="HTML")

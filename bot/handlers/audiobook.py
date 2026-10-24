@@ -9,6 +9,7 @@ are downloaded as one file and delivered whole (local Bot API server, up to
 from __future__ import annotations
 
 import logging
+from html import escape
 import os
 from collections import OrderedDict
 
@@ -98,7 +99,7 @@ async def book_search(message: Message) -> None:
     if len(query) < 2:
         return
 
-    status = await message.answer(f"📚 Ищу аудиокниги: <b>{query}</b>…", parse_mode="HTML")
+    status = await message.answer(f"📚 Ищу аудиокниги: <b>{escape(query)}</b>…", parse_mode="HTML")
     try:
         books = await ab_service.search(query)
     except Exception as e:

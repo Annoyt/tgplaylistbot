@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from html import escape
 import re
 from collections import OrderedDict
 from difflib import SequenceMatcher
@@ -33,8 +34,10 @@ def _format_results(tracks: list[TrackInfo], page: int, per_page: int, total: in
 
     for i, t in enumerate(tracks[start:start+per_page], start=start+1):
         badge = " ✅" if _is_official(t) else ""
+        # HTML-escaped: results are sent with parse_mode=HTML, and a title like
+        # "I <3 you" made Telegram reject the whole message.
         lines.append(
-            f"{i}. {t.artist} – {t.title}{badge} "
+            f"{i}. {escape(t.artist)} – {escape(t.title)}{badge} "
             f"{t.duration_str} {t.source_icon} "
             f"{t.size_str} {t.bitrate_str}"
         )
@@ -61,7 +64,7 @@ async def text_search(message: Message) -> None:
     # Always send status to the General topic or DM
     status_msg = await message.bot.send_message(
         chat_id=message.chat.id,
-        text=f"🔍 Ищу на всех платформах: <b>{query}</b>...",
+        text=f"🔍 Ищу на всех платформах: <b>{escape(query)}</b>...",
         message_thread_id=None if message.chat.type != "private" else getattr(message, 'message_thread_id', None),
         parse_mode="HTML"
     )
@@ -131,7 +134,7 @@ async def text_search(message: Message) -> None:
         text = _format_results(all_tracks, page=1, per_page=per_page, total=len(all_tracks))
         kb = search_results_kb(all_tracks, page=1, total=len(all_tracks), per_page=per_page, artist_name=artist_name)
 
-        await status_msg.edit_text(text, reply_markup=kb)
+        await status_msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
     except Exception as e:
         logger.error("Search failed: %s", e)
@@ -193,6 +196,23 @@ def _normalize(s: str) -> str:
     return _WS_RE.sub(" ", s).strip()
 
 
+def _tag_pattern(tags) -> re.Pattern:
+    """Whole-word matcher for tags (longest first).
+
+    Substring matching gave false hits: "news" in "Huey Lewis & The News",
+    "выпуск" in "Выпускной", "час" in "Сейчас", "official" in "unofficial".
+    """
+    alts = "|".join(re.escape(t) for t in sorted(set(tags), key=len, reverse=True))
+    return re.compile(rf"(?<!\w)(?:{alts})(?!\w)")
+
+
+def _tags_in(text: str, pattern: re.Pattern) -> set[str]:
+    """Tags found in ``text``. Run on the raw lowercased text, NOT _normalize():
+    edits are usually bracketed ("Believer (Slowed + Reverb)") and _normalize
+    strips brackets, so those versions used to score like the original."""
+    return {m.group(0) for m in pattern.finditer(text.lower())}
+
+
 # Markers of podcasts / non-song long-form / compilation junk. A track carrying
 # one of these (or running far longer than a song) is pushed down hard or dropped
 # — unless the user's own query asks for that kind of content.
@@ -223,6 +243,11 @@ _LONGFORM_QUERY_TAGS = (
     "аудиокнига", "лекция", "подряд",
 )
 
+_EDIT_RE = _tag_pattern(_EDIT_TAGS)
+_JUNK_RE = _tag_pattern(_JUNK_TAGS)
+_HARD_JUNK_RE = _tag_pattern(_HARD_JUNK_TAGS)
+_LONGFORM_RE = _tag_pattern(_LONGFORM_QUERY_TAGS)
+
 _SONG_HARD_MAX_SEC = 1800   # 30 min — drop entirely (almost never a single song)
 _SONG_LONG_SEC = 1200       # 20 min — heavy penalty
 _SONG_SUSPECT_SEC = 600     # 10 min — light penalty
@@ -230,8 +255,7 @@ _SONG_SUSPECT_SEC = 600     # 10 min — light penalty
 
 def _is_longform_query(q: str) -> bool:
     """True if the query explicitly asks for a mix/podcast/album/long content."""
-    qn = _normalize(q)
-    return any(tag in qn for tag in _LONGFORM_QUERY_TAGS)
+    return bool(_tags_in(q, _LONGFORM_RE))
 
 
 def _token_set_ratio(a: str, b: str) -> float:
@@ -251,12 +275,15 @@ def _junk_penalty(track: TrackInfo, q_norm: str, longform: bool) -> float:
     """
     if longform:
         return 0.0
-    combined = _normalize(f"{track.artist} {track.title}")
-    penalty = 0.0
-    if any(tag in combined and tag not in q_norm for tag in _HARD_JUNK_TAGS):
-        penalty += 2.0   # podcasts / audiobooks / episodes / interviews
-    elif any(tag in combined and tag not in q_norm for tag in _JUNK_TAGS):
-        penalty += 1.0   # compilations / greatest hits / megamix / playlists
+    combined = f"{track.artist} {track.title}"
+    if _tags_in(combined, _HARD_JUNK_RE) - _tags_in(q_norm, _HARD_JUNK_RE):
+        penalty = 2.0    # podcasts / audiobooks / episodes / interviews
+    # Soft tags only in the title: in the uploader they are often a band name
+    # ("Huey Lewis & The News"), while a podcast channel trips the hard tags.
+    elif _tags_in(track.title, _JUNK_RE) - _tags_in(q_norm, _JUNK_RE):
+        penalty = 1.0    # compilations / greatest hits / megamix / playlists
+    else:
+        penalty = 0.0
     d = track.duration
     if d > _SONG_HARD_MAX_SEC:
         penalty += 1.5
@@ -277,12 +304,18 @@ _OFFICIAL_LABELS = (
 )
 
 
+_OFFICIAL_RE = _tag_pattern(_OFFICIAL_LABELS)
+
+
 def _is_official(track: TrackInfo) -> bool:
     """True if the track's uploader looks like an official source / label."""
     artist = track.artist.lower()
-    if artist.endswith("topic") or any(m in artist for m in _OFFICIAL_LABELS):
+    if artist.endswith("topic") or artist.endswith("vevo") or _tags_in(artist, _OFFICIAL_RE):
         return True
     return False
+
+
+_OFFICIAL_TITLE_RE = _tag_pattern(("official",))
 
 
 def _official_boost(track: TrackInfo) -> float:
@@ -290,7 +323,7 @@ def _official_boost(track: TrackInfo) -> float:
     boost = 0.0
     if _is_official(track):
         boost += 0.20
-    if "official" in track.title.lower():
+    if _tags_in(track.title, _OFFICIAL_TITLE_RE):
         boost += 0.08
     return boost
 
@@ -319,13 +352,16 @@ def relevance_score(track: TrackInfo, query_artist: str, query_title: str) -> fl
     if q_artist and q_artist in combined_t:
         score += 0.12
 
-    # Penalise remix/edit versions unless the user explicitly wanted them.
-    for tag in _EDIT_TAGS:
-        if tag in combined_t and tag not in combined_q:
-            score -= 0.25
-            break
+    # Penalise remix/edit versions unless the user asked for that kind of edit
+    # ("believer slowed" is fine with "(Slowed + Reverb)"). Applied after the
+    # clamp: the containment bonuses push matches to ~1.24, so subtracting
+    # before clamping left a bracketed edit at 0.99 — no real penalty.
+    score = min(score, 1.0)
+    edits = _tags_in(f"{track.artist} {track.title}", _EDIT_RE)
+    if edits and not edits & _tags_in(f"{query_artist} {query_title}", _EDIT_RE):
+        score -= 0.25
 
-    return max(0.0, min(score, 1.0))
+    return max(0.0, score)
 
 
 def quality_score(track: TrackInfo) -> float:
@@ -393,10 +429,11 @@ def _group_same_track(ranked: list[TrackInfo]) -> list[TrackInfo]:
     groups: list[dict] = []
     for t in ranked:
         toks = _track_tokens(t)
+        edits = _tags_in(f"{t.artist} {t.title}", _EDIT_RE)
         placed = False
         for g in groups:
-            if not toks or not g["tokens"]:
-                continue
+            if not toks or not g["tokens"] or edits != g["edits"]:
+                continue  # different tokens, or e.g. "(Slowed)" vs the original
             # Containment (overlap / smaller set) tolerates channel-name noise
             # like "ImagineDragonsVEVO" vs "7clouds" better than Jaccard, while
             # the duration gate stops different same-artist songs from merging.
@@ -410,7 +447,7 @@ def _group_same_track(ranked: list[TrackInfo]) -> list[TrackInfo]:
                 placed = True
                 break
         if not placed:
-            groups.append({"tokens": toks, "dur": t.duration, "members": [t]})
+            groups.append({"tokens": toks, "edits": edits, "dur": t.duration, "members": [t]})
 
     out: list[TrackInfo] = []
     for g in groups:

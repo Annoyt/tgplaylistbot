@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from html import escape
 import os
 import re
 import tempfile
@@ -13,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 from aiogram import F, Router
+from magic_filter import RegexpMode
 from aiogram.types import CallbackQuery, Message
 
 from bot.handlers.search import _format_results, _search_cache
@@ -27,6 +29,9 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 URL_REGEX = re.compile(r'https?://\S+', re.IGNORECASE)
+VK_PLAYLIST_REGEX = re.compile(
+    r'https?://(?:m\.)?vk\.com/(?:music/playlist/|audio\?z=audio_playlist)', re.IGNORECASE
+)
 
 # Google "share" links (share.google, g.co/kgs, google.*/search) open a search
 # results page, not a video — yt-dlp can't download them.
@@ -127,7 +132,7 @@ async def _recognize_and_search(
             return
 
         await status.edit_text(
-            f"✅ <b>Распознан трек:</b> {result.artist} – {result.title}",
+            f"✅ <b>Распознан трек:</b> {escape(result.artist)} – {escape(result.title)}",
             parse_mode="HTML",
         )
 
@@ -153,7 +158,7 @@ async def _recognize_and_search(
                 all_tracks.extend(r)
 
         if not all_tracks:
-            await status.edit_text(f"🎵 <b>{result.artist} – {result.title}</b>\nПолная версия не найдена.", parse_mode="HTML")
+            await status.edit_text(f"🎵 <b>{escape(result.artist)} – {escape(result.title)}</b>\nПолная версия не найдена.", parse_mode="HTML")
             return
 
         # Rank by closeness to the recognized official name. Drop weak matches,
@@ -272,7 +277,12 @@ async def handle_audio(message: Message) -> None:
 
 
 # ── URL links (Instagram, TikTok, etc.) ────────────
-@router.message(F.text.regexp(URL_REGEX))
+# VK playlist links belong to search.vk_playlist_url (playlist import); this
+# router runs first and used to swallow them into the generic link menu.
+# SEARCH mode: the default MATCH only fires when the text *starts* with the
+# URL, so shared links ("Check out this video … https://…") went to the
+# text search, which looked the whole sentence up on VK.
+@router.message(F.text.regexp(URL_REGEX, mode=RegexpMode.SEARCH), ~F.text.regexp(VK_PLAYLIST_REGEX))
 async def handle_link(message: Message) -> None:
 
     url = URL_REGEX.search(message.text).group(0)

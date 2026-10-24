@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from html import escape
 import os
 
 from aiogram import F, Router
@@ -61,9 +62,20 @@ async def cb_page(callback: CallbackQuery) -> None:
     artist_name = filtered[0].artist if filtered else None
 
     text = _format_results(filtered, page, 10, len(filtered))
-    kb = search_results_kb(filtered, page, len(filtered), sort_by=sort_by, lossless_only=lossless, artist_name=artist_name)
-    await callback.message.edit_text(text, reply_markup=kb)
+    kb = search_results_kb(filtered, page, len(filtered), sort_by=sort_by, lossless_only=lossless,
+                           artist_name=artist_name, index_map=_index_map(tracks, filtered))
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
+
+
+def _index_map(cached: list, view: list) -> list[int]:
+    """Position of each track of a sorted/filtered ``view`` in the ``cached`` list.
+
+    Select/download buttons look tracks up in the cached list; numbering them
+    by the view sent users a different track after sorting or filtering.
+    """
+    pos = {id(t): i for i, t in enumerate(cached)}
+    return [pos[id(t)] for t in view]
 
 
 @router.callback_query(F.data.startswith("filter:"))
@@ -75,7 +87,7 @@ async def cb_filter(callback: CallbackQuery) -> None:
     page = int(parts[3]) if len(parts) > 3 else 1
 
     user_id = callback.from_user.id
-    tracks = get_cached_tracks(user_id)
+    cached = tracks = get_cached_tracks(user_id)
     if not tracks:
         await callback.answer("Результаты устарели.")
         return
@@ -98,8 +110,9 @@ async def cb_filter(callback: CallbackQuery) -> None:
     artist_name = tracks[0].artist if tracks else None
 
     text = _format_results(tracks, page, 10, len(tracks))
-    kb = search_results_kb(tracks, page, len(tracks), sort_by=sort_by, lossless_only=lossless, artist_name=artist_name)
-    await callback.message.edit_text(text, reply_markup=kb)
+    kb = search_results_kb(tracks, page, len(tracks), sort_by=sort_by, lossless_only=lossless,
+                           artist_name=artist_name, index_map=_index_map(cached, tracks))
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
 
@@ -255,18 +268,17 @@ async def cb_download(callback: CallbackQuery) -> None:
                 # We will keep the search message so users can download other tracks
                 # Or we can link it. The PRD says "search message and original request are kept until vote passes".
                 # Find original msg id from session
+                # Only a session from THIS chat: message ids are per chat, and the
+                # routing loop deletes this message id here once the vote passes.
                 orig_id = None
-                row = await db.execute("SELECT original_msg_id FROM search_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
+                row = await db.execute(
+                    "SELECT original_msg_id FROM search_sessions WHERE user_id = ? AND chat_id = ? "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (user_id, callback.message.chat.id),
+                )
                 res = await row.fetchone()
                 if res:
                     orig_id = res["original_msg_id"]
-
-                # Add the column to pending_tracks if not exists
-                try:
-                    await db.execute("ALTER TABLE pending_tracks ADD COLUMN original_msg_id INTEGER")
-                    await db.commit()
-                except:
-                    pass
 
                 await db.execute(
                     "INSERT INTO pending_tracks (chat_id, audio_msg_id, search_msg_id, user_id, track_json, original_msg_id) VALUES (?, ?, ?, ?, ?, ?)",
@@ -372,7 +384,7 @@ async def cb_select_track(callback: CallbackQuery) -> None:
         if res and res["is_admin"] == 1:
             is_admin = True
 
-    text = f"🎵 <b>{track.artist} – {track.title}</b>\n\n🕒 Длительность: {track.duration_str}\n📥 Источник: {track.source_name}"
+    text = f"🎵 <b>{escape(track.artist)} – {escape(track.title)}</b>\n\n🕒 Длительность: {track.duration_str}\n📥 Источник: {track.source_name}"
     
     await callback.message.edit_text(
         text, 
@@ -415,7 +427,7 @@ async def cb_popular_artist(callback: CallbackQuery) -> None:
     
     # Send intermediate status or just edit
     old_text = callback.message.text
-    await callback.message.edit_text(f"{old_text}\n\n⏳ <b>Ищу лучшие хиты {artist_name}...</b>", parse_mode="HTML")
+    await callback.message.edit_text(f"{escape(old_text or '')}\n\n⏳ <b>Ищу лучшие хиты {escape(artist_name)}...</b>", parse_mode="HTML")
 
     from services import vk_music as vk_svc
     from services import youtube as yt_svc

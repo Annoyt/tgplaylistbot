@@ -4,6 +4,7 @@ from __future__ import annotations
 from aiogram.dispatcher.event.bases import UNHANDLED
 
 import logging
+from html import escape
 import os
 
 from aiogram import F, Router
@@ -388,8 +389,9 @@ async def cb_undo(callback: CallbackQuery) -> None:
             # Send the search results back to the general chat
             await callback.message.bot.send_message(
                 chat_id=chat_id,
-                text=f"⏪ Действие отменено пользователем {callback.from_user.first_name}.\n\n{text}",
+                text=f"⏪ Действие отменено пользователем {escape(callback.from_user.first_name)}.\n\n{text}",
                 reply_markup=kb,
+                parse_mode="HTML",
                 message_thread_id=None # General topic
             )
 

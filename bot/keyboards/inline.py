@@ -50,8 +50,14 @@ def search_results_kb(
     sort_by: str = "",
     lossless_only: bool = False,
     artist_name: str | None = None,
+    index_map: list[int] | None = None,
 ) -> InlineKeyboardMarkup:
-    """Build keyboard for search results: pagination + filters + playlist emojis."""
+    """Build keyboard for search results: pagination + filters + playlist emojis.
+
+    ``index_map[i]`` is the position of displayed track ``i`` in the user's
+    cached result list, which select/download look tracks up in. Pass it when
+    ``tracks`` is a sorted/filtered view of that list.
+    """
     total_pages = max(1, (total + per_page - 1) // per_page)
     buttons: list[list[InlineKeyboardButton]] = []
 
@@ -64,7 +70,8 @@ def search_results_kb(
 
     for i in range(start, end):
         display_idx = i + 1
-        btn = InlineKeyboardButton(text=f"[{display_idx}] Выбрать", callback_data=f"select_track:{i}:{page}")
+        cache_idx = index_map[i] if index_map is not None else i
+        btn = InlineKeyboardButton(text=f"[{display_idx}] Выбрать", callback_data=f"select_track:{cache_idx}:{page}")
         if len(track_row1) < 5:
             track_row1.append(btn)
         else:
