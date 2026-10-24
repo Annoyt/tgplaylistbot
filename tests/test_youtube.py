@@ -326,3 +326,105 @@ class TestUpdateYtdlp:
         assert await yt.update_ytdlp() is None
         assert os.readlink(ytdlp_root / "current") == "base"
         assert not (ytdlp_root / "v1700000000").exists()
+
+
+# ── hardening ──────────────────────────────────────────────────────────────
+
+class TestHardening:
+    async def test_every_download_refuses_live_streams(self, spawned, tmp_path, fixed_uid, make_track):
+        spawned.factory = lambda a: FakeProc(rc=1)
+        await yt.download(make_track(), "mp3_320", download_dir=tmp_path)
+        await yt.download(make_track(), "flac", download_dir=tmp_path)
+        await yt.download_from_url("https://x", download_dir=tmp_path)
+        await yt.download_video_from_url("https://x", download_dir=tmp_path)
+        for cmd in spawned.calls:
+            assert cmd[cmd.index("--match-filter") + 1] == "!is_live", cmd
+
+    async def test_url_download_ignores_playlists(self, spawned, tmp_path, fixed_uid):
+        spawned.factory = lambda a: FakeProc(rc=1)
+        await yt.download_from_url("https://youtube.com/watch?v=X&list=PL1", download_dir=tmp_path)
+        assert "--no-playlist" in spawned.calls[0]
+
+    async def test_url_is_last_argument(self, spawned, tmp_path, fixed_uid):
+        spawned.factory = lambda a: FakeProc(rc=1)
+        await yt.download_from_url("https://a", download_dir=tmp_path)
+        await yt.download_video_from_url("https://b", download_dir=tmp_path)
+        assert [c[-1] for c in spawned.calls] == ["https://a", "https://b"]
+
+    async def test_subprocess_gets_own_session_for_group_kill(self, monkeypatch):
+        seen = {}
+
+        async def fake_exec(*a, **kw):
+            seen.update(kw)
+            return FakeProc()
+        monkeypatch.setattr(yt.asyncio, "create_subprocess_exec", fake_exec)
+        await yt._run("x")
+        assert seen["start_new_session"] is True
+
+    async def test_cancellation_kills_child(self, monkeypatch):
+        import asyncio
+        killed = []
+
+        class Hanging(FakeProc):
+            async def communicate(self):
+                await asyncio.sleep(10)
+
+            def kill(self):
+                killed.append(True)
+
+        async def fake_exec(*a, **kw):
+            return Hanging()
+        monkeypatch.setattr(yt.asyncio, "create_subprocess_exec", fake_exec)
+        task = asyncio.create_task(yt._run("yt-dlp", timeout=60))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert killed == [True]
+
+    def test_kill_prefers_process_group(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(yt.os, "killpg", lambda pid, sig: calls.append((pid, sig)))
+        yt._kill(SimpleNamespace(pid=4242, kill=lambda: calls.append("kill")))
+        assert calls == [(4242, yt.signal.SIGKILL)]
+
+    def test_kill_falls_back_when_group_gone(self, monkeypatch):
+        calls = []
+
+        def gone(pid, sig):
+            raise ProcessLookupError
+        monkeypatch.setattr(yt.os, "killpg", gone)
+        yt._kill(SimpleNamespace(pid=4242, kill=lambda: calls.append("kill")))
+        assert calls == ["kill"]
+
+
+class TestUpdateHealing:
+    async def test_dangling_current_is_repointed(self, tmp_path, monkeypatch):
+        root = tmp_path / "ytdlp"
+        (root / "v1" / "bin").mkdir(parents=True)
+        (root / "v1" / "bin" / "yt-dlp").write_text("#!")
+        (root / "current").symlink_to("v_deleted")       # dangling
+        monkeypatch.setattr(yt.settings, "ytdlp_dir", str(root))
+
+        async def fake_run(*cmd, timeout=300):
+            return 0, json.dumps({"install": []}).encode(), b""
+
+        async def fake_version():
+            return "x"
+        monkeypatch.setattr(yt, "_run", fake_run)
+        monkeypatch.setattr(yt, "ytdlp_version", fake_version)
+        await yt.update_ytdlp()
+        assert os.readlink(root / "current") == "v1"
+
+    async def test_updates_are_serialised(self, tmp_path, monkeypatch):
+        import asyncio
+        active, peak = [0], [0]
+
+        async def slow_inner():
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+            await asyncio.sleep(0.02)
+            active[0] -= 1
+        monkeypatch.setattr(yt, "_update_ytdlp", slow_inner)
+        await asyncio.gather(yt.update_ytdlp(), yt.update_ytdlp(), yt.update_ytdlp())
+        assert peak[0] == 1

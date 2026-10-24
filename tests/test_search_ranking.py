@@ -49,6 +49,12 @@ class TestJunkPenalty:
     def test_soft_junk_tag(self, make_track):
         assert s._junk_penalty(make_track(title="Greatest Hits", duration=200), "x", False) == 1.0
 
+    def test_soft_junk_tag_in_uploader_ignored(self, make_track):
+        assert s._junk_penalty(make_track(artist="Best Greatest Hits", title="Song", duration=200), "x", False) == 0.0
+
+    def test_hard_junk_tag_in_uploader_counts(self, make_track):
+        assert s._junk_penalty(make_track(artist="Lex Fridman Podcast", title="Talk #1", duration=200), "x", False) == 2.0
+
     def test_tag_present_in_query_is_not_penalised(self, make_track):
         assert s._junk_penalty(make_track(title="Greatest Hits", duration=200), "greatest hits", False) == 0.0
 
@@ -91,14 +97,36 @@ class TestRelevanceScore:
         t = make_track(artist="Metallica", title="One")
         assert s.relevance_score(t, "Imagine Dragons", "Believer") < 0.4
 
-    def test_remix_penalised_unless_asked(self, make_track):
+    @pytest.mark.parametrize("title", ["Believer (Slowed + Reverb)", "Believer [Live]", "Believer (Remix)"])
+    def test_bracketed_edits_get_full_penalty(self, make_track, title):
         orig = make_track(artist="Imagine Dragons", title="Believer")
-        remix = make_track(artist="Imagine Dragons", title="Believer (Slowed + Reverb)")
-        remix_plain = make_track(artist="Imagine Dragons", title="Believer slowed")
-        assert s.relevance_score(remix_plain, "Imagine Dragons", "Believer") < s.relevance_score(orig, "Imagine Dragons", "Believer")
-        # bracketed tags are stripped by normalisation, so they don't count as edits
-        assert s.relevance_score(remix, "Imagine Dragons", "Believer") == 1.0
-        assert s.relevance_score(remix_plain, "Imagine Dragons", "Believer slowed") == 1.0
+        edit = make_track(artist="Imagine Dragons", title=title)
+        assert s.relevance_score(orig, "Imagine Dragons", "Believer") == 1.0
+        assert s.relevance_score(edit, "Imagine Dragons", "Believer") == pytest.approx(0.75)
+
+    def test_unbracketed_edit_penalised(self, make_track):
+        orig = make_track(artist="Imagine Dragons", title="Believer")
+        edit = make_track(artist="Imagine Dragons", title="Believer slowed")
+        assert s.relevance_score(edit, "Imagine Dragons", "Believer") <= \
+            s.relevance_score(orig, "Imagine Dragons", "Believer") - 0.25
+
+    def test_edit_not_penalised_when_asked_for(self, make_track):
+        orig = make_track(artist="Imagine Dragons", title="Believer")
+        edit = make_track(artist="Imagine Dragons", title="Believer (Slowed + Reverb)")
+        # same normalised text, so equal scores mean the edit got no penalty
+        assert s.relevance_score(edit, "Imagine Dragons", "Believer slowed") == \
+            s.relevance_score(orig, "Imagine Dragons", "Believer slowed")
+
+    def test_different_edit_than_asked_is_penalised(self, make_track):
+        live = make_track(artist="Imagine Dragons", title="Believer (Live)")
+        orig = make_track(artist="Imagine Dragons", title="Believer")
+        assert s.relevance_score(live, "Imagine Dragons", "Believer remix") < \
+            s.relevance_score(orig, "Imagine Dragons", "Believer remix")
+
+    def test_edit_tag_inside_a_word_is_not_an_edit(self, make_track):
+        # "live" inside "Oliver", "cover" inside "Discovery"
+        t = make_track(artist="Oliver Tree", title="Discovery")
+        assert s.relevance_score(t, "Oliver Tree", "Discovery") == 1.0
 
     def test_containment_bonus(self, make_track):
         base = make_track(artist="Other", title="Believer extended version here")
@@ -250,3 +278,51 @@ class TestFormatResults:
 
     def test_cached_tracks_default_empty(self):
         assert s.get_cached_tracks(-12345) == []
+
+
+class TestWholeWordTags:
+    def test_news_band_is_not_junk(self, make_track):
+        t = make_track(artist="Huey Lewis & The News", title="The Power of Love", duration=230)
+        assert s._junk_penalty(t, "power of love", False) == 0.0
+
+    def test_vypusknoy_is_not_an_episode(self, make_track):
+        t = make_track(artist="Баста", title="Выпускной", duration=230)
+        assert s._junk_penalty(t, "баста выпускной", False) == 0.0
+
+    def test_real_episode_still_hard_junk(self, make_track):
+        t = make_track(artist="Радио", title="Выпуск 12", duration=230)
+        assert s._junk_penalty(t, "x", False) == 2.0
+
+    @pytest.mark.parametrize("q", ["Сейчас", "Imagine Dragons remix"])
+    def test_words_containing_tags_are_not_longform(self, q):
+        assert not s._is_longform_query(q)
+
+    def test_unofficial_is_not_official(self, make_track):
+        assert not s._is_official(make_track(artist="Unofficial Uploads"))
+        assert s._official_boost(make_track(artist="x", title="Song (Unofficial Video)")) == 0.0
+
+    def test_bracketed_junk_tag_counts(self, make_track):
+        t = make_track(title="Song (Full Album)", duration=200)
+        assert s._junk_penalty(t, "song", False) == 1.0
+
+
+class TestEditsRankBelowOriginal:
+    def test_official_original_beats_320k_slowed_and_live_copies(self, make_track):
+        official = make_track(artist="Imagine Dragons - Topic", title="Believer", source="youtube", duration=204)
+        slowed = make_track(artist="Imagine Dragons", title="Believer (Slowed + Reverb)", source="vk", bitrate=320, duration=250)
+        live = make_track(artist="Imagine Dragons", title="Believer (Live)", source="vk", bitrate=320, duration=215)
+        out = s.rank_by_relevance([slowed, live, official], "Imagine Dragons", "Believer")
+        assert out[0] is official
+
+    def test_edit_not_grouped_with_original(self, make_track):
+        orig = make_track(artist="Imagine Dragons", title="Believer", duration=204)
+        other = make_track(artist="Metallica", title="One", duration=446)
+        slowed = make_track(artist="Imagine Dragons", title="Believer (Slowed)", source="vk", bitrate=320, duration=230)
+        # would merge on tokens + duration; the edit tag keeps them apart
+        assert s._group_same_track([orig, other, slowed]) == [orig, other, slowed]
+
+    def test_same_edit_still_groups(self, make_track):
+        a = make_track(artist="Imagine Dragons", title="Believer (Live)", duration=215)
+        other = make_track(artist="Metallica", title="One", duration=446)
+        b = make_track(artist="Imagine Dragons", title="Believer [Live]", source="vk", bitrate=320, duration=216)
+        assert s._group_same_track([a, other, b]) == [b, a, other]

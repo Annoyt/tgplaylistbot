@@ -380,3 +380,34 @@ class TestRecognizeFromMessage:
         status = msg.bot.send_message.return_value
         status.edit_text.assert_awaited_once_with("😔 Ничего не нашлось. Попробуй более длинный фрагмент.")
         assert not os.path.exists(f)
+
+
+# ── which texts reach handle_link (real aiogram filters) ───────────────────
+
+from datetime import datetime  # noqa: E402
+
+from aiogram.types import Chat, Message as TgMessage  # noqa: E402
+
+
+async def link_handler_accepts(text):
+    handler = next(h for h in r.router.message.handlers if h.callback is r.handle_link)
+    ok, _ = await handler.check(TgMessage(message_id=1, date=datetime.now(), chat=Chat(id=1, type="private"), text=text))
+    return ok
+
+
+class TestLinkRouting:
+    @pytest.mark.parametrize("text", [
+        "https://youtube.com/shorts/x",
+        "Check out this video, \"а я латыш мем\" https://share.google/6ytHTD8O2gX0TrJnL",
+        "Посмотри это видео на TikTok https://vm.tiktok.com/ZM123/",
+    ])
+    async def test_links_anywhere_in_text(self, text):
+        assert await link_handler_accepts(text)
+
+    @pytest.mark.parametrize("text", [
+        "https://vk.com/music/playlist/-147845620_2949_abc",
+        "https://m.vk.com/audio?z=audio_playlist-1_2",
+        "Imagine Dragons Believer",
+    ])
+    async def test_not_links_or_vk_playlists(self, text):
+        assert not await link_handler_accepts(text)
