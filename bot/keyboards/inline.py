@@ -26,6 +26,22 @@ def main_reply_kb() -> ReplyKeyboardMarkup:
 
 
 
+_CALLBACK_LIMIT = 64  # Telegram's callback_data limit, in bytes
+
+
+def _fit_callback(prefix: str, value: str) -> str:
+    """``prefix + value``, with ``value`` cut to fit 64 bytes (marked by "..").
+
+    The limit is in UTF-8 bytes: a 37-character cut let a Cyrillic or emoji
+    artist name overflow it, and Telegram then rejected the whole results message.
+    """
+    room = _CALLBACK_LIMIT - len(prefix.encode())
+    raw = value.encode()
+    if len(raw) <= room:
+        return prefix + value
+    return prefix + raw[:room - 2].decode("utf-8", "ignore") + ".."
+
+
 def search_results_kb(
     tracks: list[TrackInfo],
     page: int,
@@ -91,10 +107,8 @@ def search_results_kb(
     ])
 
     if artist_name:
-        # Truncate to avoid 64-byte callback_data limit
-        short_name = (artist_name[:35] + '..') if len(artist_name) > 37 else artist_name
         buttons.append([
-            InlineKeyboardButton(text="🌟 Популярные треки", callback_data=f"popular_artist:{short_name}")
+            InlineKeyboardButton(text="🌟 Популярные треки", callback_data=_fit_callback("popular_artist:", artist_name))
         ])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)

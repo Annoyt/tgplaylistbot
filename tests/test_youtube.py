@@ -1,0 +1,328 @@
+"""services/youtube.py: yt-dlp command building, parsing, size probe, self-update."""
+
+import json
+import os
+from types import SimpleNamespace
+
+import pytest
+
+from services import youtube as yt
+
+
+class FakeProc:
+    def __init__(self, out=b"", err=b"", rc=0, on_communicate=None):
+        self._out, self._err, self.returncode = out, err, rc
+        self._hook = on_communicate
+
+    async def communicate(self):
+        if self._hook:
+            self._hook()
+        return self._out, self._err
+
+    def kill(self):
+        pass
+
+    async def wait(self):
+        return self.returncode
+
+
+@pytest.fixture
+def spawned(monkeypatch):
+    """Capture every create_subprocess_exec call; respond via a settable factory."""
+    calls = []
+    state = SimpleNamespace(factory=lambda args: FakeProc())
+
+    async def fake_exec(*args, **kwargs):
+        calls.append(list(args))
+        return state.factory(list(args))
+
+    monkeypatch.setattr(yt.asyncio, "create_subprocess_exec", fake_exec)
+    state.calls = calls
+    return state
+
+
+@pytest.fixture
+def fixed_uid(monkeypatch):
+    monkeypatch.setattr(yt.uuid, "uuid4", lambda: SimpleNamespace(hex="fixeduid"))
+    return "fixeduid"
+
+
+# ── ytdlp_error ────────────────────────────────────────────────────────────
+
+class TestYtdlpError:
+    def test_keeps_only_error_lines(self):
+        err = b"WARNING: old\n[generic] x\nERROR: Unsupported URL: http://a\nERROR: second\n"
+        assert yt.ytdlp_error(err) == "ERROR: Unsupported URL: http://a | ERROR: second"
+
+    def test_falls_back_to_last_three_lines(self):
+        err = b"a\nb\nc\nd\n"
+        assert yt.ytdlp_error(err) == "b | c | d"
+
+    def test_clips_long_lines(self):
+        out = yt.ytdlp_error(b"ERROR: " + b"x" * 1000, limit=20)
+        assert out == "ERROR: " + "x" * 13 + "…"
+
+    def test_line_exactly_at_limit_not_clipped(self):
+        line = "ERROR: " + "x" * 13
+        assert yt.ytdlp_error(line.encode(), limit=20) == line
+
+    def test_invalid_utf8_does_not_crash(self):
+        assert yt.ytdlp_error(b"ERROR: \xff\xfe bad") .startswith("ERROR: ")
+
+
+# ── format args ────────────────────────────────────────────────────────────
+
+class TestVideoFormatArgs:
+    def test_best(self):
+        assert yt._video_format_args(None) == ["-f", "bv*+ba/b"]
+
+    def test_capped_by_smaller_side(self):
+        assert yt._video_format_args(720) == ["-f", "bv*+ba/b", "-S", "res:720"]
+
+
+# ── search ─────────────────────────────────────────────────────────────────
+
+class TestSearch:
+    async def test_parses_flat_playlist_json(self, spawned):
+        lines = [
+            {"title": "Believer", "uploader": "ImagineDragonsVEVO", "duration": 204.6, "id": "abc"},
+            {"title": "No uploader", "channel": "Chan", "duration": None, "url": "u2"},
+        ]
+        spawned.factory = lambda a: FakeProc(out=("\n".join(json.dumps(x) for x in lines) + "\nnot json\n").encode())
+        tracks = await yt.search("believer", count=5)
+        assert spawned.calls[0][:2] == ["yt-dlp", "ytsearch5:believer"]
+        assert [t.title for t in tracks] == ["Believer", "No uploader"]
+        assert tracks[0].artist == "ImagineDragonsVEVO" and tracks[0].duration == 204
+        assert tracks[0].source == "youtube" and tracks[0].source_id == "abc" and tracks[0].bitrate == 160
+        assert tracks[1].artist == "Chan" and tracks[1].duration == 0 and tracks[1].source_id == "u2"
+
+    async def test_empty_output(self, spawned):
+        spawned.factory = lambda a: FakeProc(out=b"")
+        assert await yt.search("x") == []
+
+
+# ── downloads ──────────────────────────────────────────────────────────────
+
+class TestDownloadFromUrl:
+    async def test_success_returns_mp3_and_passes_flags(self, spawned, tmp_path, fixed_uid):
+        def make(args):
+            return FakeProc(on_communicate=lambda: (tmp_path / f"{fixed_uid}.mp3").write_bytes(b"ID3"))
+        spawned.factory = make
+        path = await yt.download_from_url("https://www.tiktok.com/@u/video/1", download_dir=tmp_path)
+        assert path == str(tmp_path / f"{fixed_uid}.mp3")
+        cmd = spawned.calls[0]
+        assert cmd[0] == "yt-dlp" and cmd[-1] == "https://www.tiktok.com/@u/video/1"
+        assert "youtube:player_client=default,android_vr" in cmd
+        assert cmd[cmd.index("--audio-format") + 1] == "mp3"
+
+    async def test_failure_returns_none(self, spawned, tmp_path, fixed_uid):
+        spawned.factory = lambda a: FakeProc(rc=1, err=b"ERROR: nope")
+        assert await yt.download_from_url("https://x", download_dir=tmp_path) is None
+
+    async def test_empty_file_is_failure(self, spawned, tmp_path, fixed_uid):
+        spawned.factory = lambda a: FakeProc(on_communicate=lambda: (tmp_path / f"{fixed_uid}.mp3").write_bytes(b""))
+        assert await yt.download_from_url("https://x", download_dir=tmp_path) is None
+
+    async def test_cookies_passed_when_present(self, spawned, tmp_path, fixed_uid, tmp_settings):
+        tmp_settings.cookies_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_settings.cookies_path.write_text("# Netscape")
+        spawned.factory = lambda a: FakeProc(rc=1)
+        await yt.download_from_url("https://x", download_dir=tmp_path)
+        cmd = spawned.calls[0]
+        assert cmd[cmd.index("--cookies") + 1] == str(tmp_settings.cookies_path)
+
+
+class TestDownloadVideo:
+    async def test_uses_shared_format_args_and_finds_any_extension(self, spawned, tmp_path, fixed_uid):
+        spawned.factory = lambda a: FakeProc(on_communicate=lambda: (tmp_path / f"{fixed_uid}.mkv").write_bytes(b"v"))
+        path = await yt.download_video_from_url("https://x", max_height=720, download_dir=tmp_path)
+        assert path == str(tmp_path / f"{fixed_uid}.mkv")
+        cmd = spawned.calls[0]
+        assert cmd[1:5] == ["-f", "bv*+ba/b", "-S", "res:720"]
+        assert cmd[cmd.index("--merge-output-format") + 1] == "mp4"
+
+    async def test_failure(self, spawned, tmp_path, fixed_uid):
+        spawned.factory = lambda a: FakeProc(rc=1)
+        assert await yt.download_video_from_url("https://x", download_dir=tmp_path) is None
+
+
+class TestDownloadTrack:
+    async def test_mp3_quality_command(self, spawned, tmp_path, fixed_uid, make_track):
+        spawned.factory = lambda a: FakeProc(on_communicate=lambda: (tmp_path / f"{fixed_uid}.mp3").write_bytes(b"a"))
+        path = await yt.download(make_track(source_id="vid42"), "mp3_320", download_dir=tmp_path)
+        assert path == str(tmp_path / f"{fixed_uid}.mp3")
+        cmd = spawned.calls[0]
+        assert cmd[-1] == "https://www.youtube.com/watch?v=vid42"
+        assert "ffmpeg:-b:a 320k" in cmd
+
+    async def test_flac_quality_command(self, spawned, tmp_path, fixed_uid, make_track):
+        spawned.factory = lambda a: FakeProc(on_communicate=lambda: (tmp_path / f"{fixed_uid}.flac").write_bytes(b"a"))
+        path = await yt.download(make_track(), "flac", download_dir=tmp_path)
+        assert path.endswith(".flac")
+        cmd = spawned.calls[0]
+        assert cmd[cmd.index("--audio-format") + 1] == "flac"
+
+
+# ── probe_video_sizes ──────────────────────────────────────────────────────
+
+class TestProbeVideoSizes:
+    async def test_estimates_from_offline_selection(self, monkeypatch, tmp_settings):
+        seen_info_paths = []
+
+        async def fake_run(*cmd, timeout=300):
+            if "-J" in cmd:
+                return 0, json.dumps({"duration": 100}).encode(), b""
+            info = cmd[cmd.index("--load-info-json") + 1]
+            seen_info_paths.append(info)
+            assert os.path.exists(info)
+            if "res:360" in cmd:
+                return 0, b"1000 NA\n", b""
+            if "res:720" in cmd:
+                return 0, b"NA 800\n", b""          # HLS: 800 kbit/s * 125 * 100 s
+            return 0, b"NA NA\n", b""
+
+        monkeypatch.setattr(yt, "_run", fake_run)
+        sizes = await yt.probe_video_sizes("https://x")
+        assert sizes == {"duration": 100, "360": 1000, "720": 800 * 125 * 100, "best": 0}
+        assert len(seen_info_paths) == 3 and not os.path.exists(seen_info_paths[0])
+
+    async def test_metadata_failure_returns_none(self, monkeypatch, tmp_settings):
+        async def fake_run(*cmd, timeout=300):
+            return 1, b"", b"ERROR"
+        monkeypatch.setattr(yt, "_run", fake_run)
+        assert await yt.probe_video_sizes("https://x") is None
+
+    async def test_bad_json_returns_none(self, monkeypatch, tmp_settings):
+        async def fake_run(*cmd, timeout=300):
+            return 0, b"{not json", b""
+        monkeypatch.setattr(yt, "_run", fake_run)
+        assert await yt.probe_video_sizes("https://x") is None
+
+    async def test_selection_failure_is_zero(self, monkeypatch, tmp_settings):
+        async def fake_run(*cmd, timeout=300):
+            if "-J" in cmd:
+                return 0, b'{"duration": 10}', b""
+            return 1, b"", b""
+        monkeypatch.setattr(yt, "_run", fake_run)
+        assert await yt.probe_video_sizes("https://x") == {"duration": 10, "360": 0, "720": 0, "best": 0}
+
+
+# ── _run ───────────────────────────────────────────────────────────────────
+
+class TestRun:
+    async def test_returns_code_and_output(self, spawned):
+        spawned.factory = lambda a: FakeProc(out=b"o", err=b"e", rc=3)
+        assert await yt._run("x") == (3, b"o", b"e")
+
+    async def test_timeout_kills(self, monkeypatch):
+        killed = []
+
+        class Slow(FakeProc):
+            async def communicate(self):
+                import asyncio
+                await asyncio.sleep(10)
+
+            def kill(self):
+                killed.append(True)
+
+        async def fake_exec(*a, **k):
+            return Slow()
+        monkeypatch.setattr(yt.asyncio, "create_subprocess_exec", fake_exec)
+        assert await yt._run("x", timeout=0.01) == (-1, b"", b"timed out")
+        assert killed == [True]
+
+
+# ── update_ytdlp ───────────────────────────────────────────────────────────
+
+@pytest.fixture
+def ytdlp_root(tmp_path, monkeypatch):
+    root = tmp_path / "ytdlp"
+    (root / "base" / "bin").mkdir(parents=True)
+    (root / "old1").mkdir()                  # stale venv from an earlier upgrade
+    (root / "current").symlink_to("base")
+    monkeypatch.setattr(yt.settings, "ytdlp_dir", str(root))
+    monkeypatch.setattr(yt.settings, "ytdlp_channel", "nightly")
+    monkeypatch.setattr(yt.time, "time", lambda: 1700000000)
+
+    async def fake_version():
+        return "2026.01.01"
+    monkeypatch.setattr(yt, "ytdlp_version", fake_version)
+    return root
+
+
+def _report(*names):
+    return json.dumps({"install": [{"metadata": {"name": n}} for n in names]}).encode()
+
+
+class TestUpdateYtdlp:
+    async def test_disabled_without_dir(self, monkeypatch):
+        monkeypatch.setattr(yt.settings, "ytdlp_dir", "")
+        assert await yt.update_ytdlp() is None
+
+    async def test_missing_current_link(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(yt.settings, "ytdlp_dir", str(tmp_path))
+        assert await yt.update_ytdlp() is None
+
+    async def test_up_to_date_does_nothing(self, ytdlp_root, monkeypatch):
+        calls = []
+
+        async def fake_run(*cmd, timeout=300):
+            calls.append(cmd)
+            return 0, _report("certifi"), b""
+        monkeypatch.setattr(yt, "_run", fake_run)
+        assert await yt.update_ytdlp() is None
+        assert len(calls) == 1 and "--dry-run" in calls[0] and "--pre" in calls[0]
+        assert os.readlink(ytdlp_root / "current") == "base"
+
+    async def test_check_failure(self, ytdlp_root, monkeypatch):
+        async def fake_run(*cmd, timeout=300):
+            return 1, b"", b"network down"
+        monkeypatch.setattr(yt, "_run", fake_run)
+        assert await yt.update_ytdlp() is None
+
+    async def test_upgrade_swaps_link_and_prunes(self, ytdlp_root, monkeypatch):
+        calls = []
+
+        async def fake_run(*cmd, timeout=300):
+            calls.append(cmd)
+            if "--dry-run" in cmd:
+                return 0, _report("yt_dlp"), b""   # underscore spelling is normalised
+            if cmd[1:3] == ("-m", "venv"):
+                (ytdlp_root / "v1700000000" / "bin").mkdir(parents=True)
+                return 0, b"", b""
+            if cmd[-1] == "--version":
+                return 0, b"2026.10.23\n", b""
+            return 0, b"", b""
+        monkeypatch.setattr(yt, "_run", fake_run)
+
+        assert await yt.update_ytdlp() == ("2026.01.01", "2026.10.23")
+        assert os.readlink(ytdlp_root / "current") == "v1700000000"
+        remaining = sorted(p.name for p in ytdlp_root.iterdir())
+        assert remaining == ["base", "current", "v1700000000"]   # stale old1 pruned, previous kept
+        install = next(c for c in calls if c[1] == "install" and "--dry-run" not in c)
+        assert install[0] == str(ytdlp_root / "v1700000000" / "bin" / "pip")
+        assert "--pre" in install and install[-1] == "yt-dlp[default]"
+
+    async def test_stable_channel_has_no_pre(self, ytdlp_root, monkeypatch):
+        monkeypatch.setattr(yt.settings, "ytdlp_channel", "stable")
+        calls = []
+
+        async def fake_run(*cmd, timeout=300):
+            calls.append(cmd)
+            return 0, _report(), b""
+        monkeypatch.setattr(yt, "_run", fake_run)
+        await yt.update_ytdlp()
+        assert "--pre" not in calls[0]
+
+    async def test_failed_install_cleans_up_and_keeps_current(self, ytdlp_root, monkeypatch):
+        async def fake_run(*cmd, timeout=300):
+            if "--dry-run" in cmd:
+                return 0, _report("yt-dlp"), b""
+            if cmd[1:3] == ("-m", "venv"):
+                (ytdlp_root / "v1700000000").mkdir()
+                return 0, b"", b""
+            return 1, b"", b"pip exploded"
+        monkeypatch.setattr(yt, "_run", fake_run)
+        assert await yt.update_ytdlp() is None
+        assert os.readlink(ytdlp_root / "current") == "base"
+        assert not (ytdlp_root / "v1700000000").exists()
