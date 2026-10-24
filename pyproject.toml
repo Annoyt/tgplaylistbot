@@ -18,9 +18,29 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = "test_*.py"
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
 ]
+
+[tool.coverage.run]
+source = ["app", "bot", "services", "config", "run"]
+omit = ["tests/*"]
+
+[tool.mutmut]
+paths_to_mutate = [
+    "bot/handlers/search.py",
+    "bot/keyboards/inline.py",
+    "bot/signature.py",
+    "services/youtube.py",
+    "services/cache.py",
+    "services/downloader.py",
+    "services/hls_downloader.py",
+    "app/db/models.py",
+    "app/auth/service.py",
+    "config.py",
+]
+tests_dir = ["tests/"]

@@ -40,3 +40,8 @@ update_vk_token.py
 
 # Bot download dir (bind-mounted into the containers)
 downloads/
+
+# Test / mutation-testing artifacts
+mutants/
+.coverage
+htmlcov/

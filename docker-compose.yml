@@ -24,7 +24,10 @@ services:
       # sends can pass file paths). Not host /tmp: see deploy.sh.
       - ./downloads:/tmp/musicbot
     ports:
-      - "8081:8081"
+      # Host-only: the bot reaches it over the compose network. Published on
+      # 0.0.0.0 it was an open Bot API server for anyone's bot token, in
+      # --local mode (file access by path) on our api_id/hash.
+      - "127.0.0.1:8081:8081"
 
   platform:
     build: .

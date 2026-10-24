@@ -18,3 +18,8 @@ serve-docs.sh
 .github/
 deploy.sh
 downloads/
+tests/
+mutants/
+.coverage
+htmlcov/
+.venv/
