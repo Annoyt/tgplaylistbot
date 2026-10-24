@@ -7,9 +7,17 @@ from aiogram.types import Message
 from aiogram.filters import Command
 
 from app.db.database import get_db
+from bot.handlers.admin import is_bot_admin
 
 router = Router()
 logger = logging.getLogger(__name__)
+
+
+async def _delete_quietly(message: Message) -> None:
+    try:
+        await message.delete()
+    except Exception:
+        logger.warning("Could not delete a message holding VK credentials (no rights?)")
 
 @router.message(Command("auth"))
 async def cmd_auth(message: Message):
@@ -37,7 +45,14 @@ async def handle_vk_token_link(message: Message):
         return
 
     token = match.group(1)
-    
+
+    # The token is a secret: hide the message before anything else.
+    await _delete_quietly(message)
+    # The token is bot-wide: anyone could replace (and break) VK for everyone.
+    if not await is_bot_admin(message.from_user.id):
+        await message.answer("🔒 Менять токен VK может только администратор бота.")
+        return
+
     # Optional: extract user_id if present
     user_id_match = re.search(r"user_id=(\d+)", text)
     vk_user_id = user_id_match.group(1) if user_id_match else "unknown"
@@ -74,7 +89,12 @@ async def cmd_vklogin(message: Message):
     
     login = parts[1]
     password = parts[2]
-    
+
+    await _delete_quietly(message)  # hide the password first
+    if not await is_bot_admin(message.from_user.id):
+        await message.answer("🔒 Менять вход в VK может только администратор бота.")
+        return
+
     db = await get_db()
     try:
         # Clear existing unprivileged token and set official login/password
@@ -84,15 +104,8 @@ async def cmd_vklogin(message: Message):
         await db.commit()
         
         await message.answer("✅ <b>Учетные данные сохранены!</b>\n\nЯ удалил старые браузерные токены. Теперь при любом поиске я проведу 100% официальную авторизацию с сервера под видом Android-приложения, и <b>никаких 'заглушек' в 25 секунд больше не будет!</b>", parse_mode="HTML")
-        
-        # Security: delete user's message containing the password
-        try:
-            await message.delete()
-            logger.info("VK Login executed. User's password message was successfully hidden/deleted.")
-        except Exception:
-            logger.warning("Could not delete user's message to hide password (bot might lack rights).")
-    
     except Exception as e:
-        await message.answer(f"❌ <b>Критическая ошибка базы данных:</b> {e}", parse_mode="HTML")
+        logger.error("Failed to save VK login: %s", e)
+        await message.answer("❌ Ошибка базы данных при сохранении входа VK.")
     finally:
         await db.close()

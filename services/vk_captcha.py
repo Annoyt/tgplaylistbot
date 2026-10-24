@@ -5,25 +5,32 @@ from typing import Dict
 
 logger = logging.getLogger(__name__)
 
+CAPTCHA_TIMEOUT_SEC = 120
+
+
 class CaptchaManager:
     def __init__(self):
-        # user_id -> threading.Event and result_value
+        # user_id -> {"event": threading.Event, "answer": str | None}
         self.active_sessions: Dict[int, Dict] = {}
 
     def get_captcha_handler(self, bot, chat_id: int, user_id: int):
-        """Returns a synchronous callback for vk_api."""
-        
+        """Returns a synchronous callback for vk_api.
+
+        Must be called from async code: the bot's loop is captured here because
+        vk_api invokes the callback in an executor thread, where
+        ``asyncio.get_event_loop()`` raises on Python 3.12 — that left the session
+        registered forever and every later message of the user was taken for a
+        captcha answer.
+        """
+        loop = asyncio.get_running_loop()
+
         def handler(captcha):
             logger.info(f"CAPTCHA triggered for user {user_id}")
-            
-            # Create a synchronization event for this thread
+
             event = threading.Event()
             session_data = {"event": event, "answer": None}
             self.active_sessions[user_id] = session_data
 
-            # Use the bot loop to send the captcha image
-            loop = asyncio.get_event_loop()
-            
             async def notify_user():
                 try:
                     await bot.send_photo(
@@ -34,21 +41,21 @@ class CaptchaManager:
                     )
                 except Exception as e:
                     logger.error(f"Failed to send captcha image: {e}")
-                    event.set() # Don't hang forever if bot fails
+                    event.set()  # Don't hang forever if bot fails
 
-            # Schedule notification in the main loop
-            asyncio.run_coroutine_threadsafe(notify_user(), loop)
-
-            # Block the current executor thread (for up to 120s)
-            if event.wait(timeout=120):
-                answer = session_data.get("answer")
-                if answer:
-                    logger.info(f"CAPTCHA answer received: {answer}")
-                    return captcha.try_again(answer)
-            
-            logger.warning(f"CAPTCHA for user {user_id} timed out or failed.")
-            del self.active_sessions[user_id]
-            return None
+            try:
+                asyncio.run_coroutine_threadsafe(notify_user(), loop)
+                # Block the current executor thread (never the event loop)
+                if event.wait(timeout=CAPTCHA_TIMEOUT_SEC) and session_data["answer"]:
+                    logger.info("CAPTCHA answer received for user %s", user_id)
+                    return captcha.try_again(session_data["answer"])
+                logger.warning(f"CAPTCHA for user {user_id} timed out or failed.")
+                return None
+            finally:
+                # Solved, timed out or crashed: stop treating the user's messages
+                # as answers. Only drop our own session, not a newer one.
+                if self.active_sessions.get(user_id) is session_data:
+                    del self.active_sessions[user_id]
 
         return handler
 

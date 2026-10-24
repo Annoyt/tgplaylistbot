@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
-from bot.handlers.admin import get_global_settings, update_global_setting
+from bot.handlers.admin import INT_SETTINGS, get_global_settings, setting_error, update_global_setting
 from fastapi.templating import Jinja2Templates
 
 from app.auth.dependencies import get_current_user
@@ -30,17 +30,12 @@ async def admin_dashboard(request: Request, user: dict = Depends(get_current_use
 @router.post("/settings")
 async def save_settings(request: Request, user: dict = Depends(get_current_user)):
     form = await request.form()
-    vote_threshold_pct = form.get("vote_threshold_pct")
-    vote_interval_sec = form.get("vote_interval_sec")
-    download_delay_sec = form.get("download_delay_sec")
-    msg_ttl_days = form.get("msg_ttl_days")
-    forward_mode = form.get("forward_mode")
-
-    await update_global_setting("vote_threshold_pct", str(vote_threshold_pct))
-    await update_global_setting("vote_interval_sec", str(vote_interval_sec))
-    await update_global_setting("download_delay_sec", str(download_delay_sec))
-    await update_global_setting("msg_ttl_days", str(msg_ttl_days))
-    await update_global_setting("forward_mode", str(forward_mode))
+    # Save only valid values: a missing field used to be stored as "None",
+    # which broke every later read of the settings (and this very page).
+    for key in (*INT_SETTINGS, "forward_mode"):
+        value = form.get(key)
+        if isinstance(value, str) and setting_error(key, value) is None:
+            await update_global_setting(key, value.strip())
 
     return RedirectResponse(url="/admin", status_code=303)
 
