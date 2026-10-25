@@ -480,3 +480,123 @@ class TestExactCommands:
         spawned.factory = lambda a: FakeProc(out=b"")
         await yt.search("q", count=3)
         assert spawned.calls[0] == ["yt-dlp", "ytsearch3:q", "--dump-json", "--flat-playlist", "--no-download", "--quiet"]
+
+
+class TestExactUpdateCommands:
+    async def test_all_three_pip_steps_exactly(self, ytdlp_root, monkeypatch):
+        import sys as _sys
+        calls = []
+
+        async def fake_run(*cmd, timeout=300):
+            calls.append((cmd, timeout))
+            if "--dry-run" in cmd:
+                return 0, _report("yt-dlp"), b""
+            if cmd[1:3] == ("-m", "venv"):
+                (ytdlp_root / "v1700000000" / "bin").mkdir(parents=True)
+            if cmd[-1] == "--version":
+                return 0, b"2026.10.23\n", b""
+            return 0, b"", b""
+        monkeypatch.setattr(yt, "_run", fake_run)
+        await yt.update_ytdlp()
+        flags = ("--no-cache-dir", "--disable-pip-version-check", "--quiet")
+        new = ytdlp_root / "v1700000000"
+        assert calls == [
+            ((str(ytdlp_root / "current" / "bin" / "pip"), "install", "-U", "--dry-run", "--report", "-",
+              *flags, "--pre", "yt-dlp[default]"), 300),
+            ((_sys.executable, "-m", "venv", str(new)), 300),
+            ((str(new / "bin" / "pip"), "install", *flags, "--pre", "yt-dlp[default]"), 300),
+            ((str(new / "bin" / "yt-dlp"), "--version"), 60),
+        ]
+
+    async def test_missing_install_key_means_up_to_date(self, ytdlp_root, monkeypatch):
+        async def fake_run(*cmd, timeout=300):
+            return 0, b"{}", b""
+        monkeypatch.setattr(yt, "_run", fake_run)
+        assert await yt.update_ytdlp() is None
+
+    def test_heal_picks_newest_venv(self, tmp_path):
+        root = tmp_path / "y"
+        for name, mtime in (("old", 1000), ("new", 2000)):
+            (root / name / "bin").mkdir(parents=True)
+            (root / name / "bin" / "yt-dlp").write_text("#!")
+            os.utime(root / name, (mtime, mtime))
+        (root / "current").symlink_to("gone")
+        yt._heal_current(root, root / "current")
+        assert os.readlink(root / "current") == "new" and not (root / "current.heal").exists()
+
+    def test_heal_ignores_missing_or_real_current(self, tmp_path):
+        root = tmp_path / "y"
+        (root / "v1" / "bin").mkdir(parents=True)
+        (root / "v1" / "bin" / "yt-dlp").write_text("#!")
+        yt._heal_current(root, root / "current")           # no link at all: not ours to create
+        assert not (root / "current").exists() and not (root / "current").is_symlink()
+
+    def test_heal_with_no_usable_venv_leaves_link(self, tmp_path):
+        root = tmp_path / "y"
+        (root / "empty").mkdir(parents=True)
+        (root / "current").symlink_to("gone")
+        yt._heal_current(root, root / "current")
+        assert os.readlink(root / "current") == "gone"
+
+    async def test_run_captures_both_streams(self, monkeypatch):
+        seen = {}
+
+        async def fake_exec(*a, **kw):
+            seen.update(kw)
+            return FakeProc()
+        monkeypatch.setattr(yt.asyncio, "create_subprocess_exec", fake_exec)
+        await yt._run("x")
+        assert seen["stdout"] == yt.asyncio.subprocess.PIPE and seen["stderr"] == yt.asyncio.subprocess.PIPE
+
+
+class TestExactProbeAndSearch:
+    async def test_probe_commands(self, monkeypatch, tmp_settings):
+        calls = []
+
+        async def fake_run(*cmd, timeout=300):
+            calls.append((cmd, timeout))
+            return (0, b'{"duration": 5}', b"") if "-J" in cmd else (0, b"10 NA", b"")
+        monkeypatch.setattr(yt, "_run", fake_run)
+        await yt.probe_video_sizes("https://v")
+        meta, *selections = calls
+        assert meta == (("yt-dlp", "-J", "--no-warnings", "--no-playlist", "--user-agent", yt.BROWSER_UA,
+                         "--extractor-args", "youtube:player_client=default,android_vr", "-4", "https://v"), 90)
+        info = selections[0][0][2]
+        assert sorted(selections) == sorted([
+            (("yt-dlp", "--load-info-json", info, "--no-warnings", "-f", "bv*+ba/b", "-S", "res:360",
+              "-O", "%(filesize,filesize_approx)s %(tbr)s"), 30),
+            (("yt-dlp", "--load-info-json", info, "--no-warnings", "-f", "bv*+ba/b", "-S", "res:720",
+              "-O", "%(filesize,filesize_approx)s %(tbr)s"), 30),
+            (("yt-dlp", "--load-info-json", info, "--no-warnings", "-f", "bv*+ba/b",
+              "-O", "%(filesize,filesize_approx)s %(tbr)s"), 30),
+        ])
+        assert info.endswith(".info.json") and info.startswith(str(tmp_settings.download_path))
+
+    async def test_probe_float_and_short_output(self, monkeypatch, tmp_settings):
+        async def fake_run(*cmd, timeout=300):
+            if "-J" in cmd:
+                return 0, b'{"duration": 10}', b""
+            if "res:360" in cmd:
+                return 0, b"1234.9", b""          # size only, no tbr column
+            if "res:720" in cmd:
+                return 0, b"NA 1.5", b""
+            return 0, b"", b""
+        monkeypatch.setattr(yt, "_run", fake_run)
+        assert await yt.probe_video_sizes("https://v") == {"duration": 10, "360": 1234, "720": 1875, "best": 0}
+
+    async def test_search_defaults_for_missing_fields(self, spawned):
+        spawned.factory = lambda a: FakeProc(out=b'{"id": "z"}\n{"title": "T", "duration": 7, "url": "u"}\n')
+        a, b = await yt.search("q")
+        assert (a.title, a.artist, a.duration, a.source_id) == ("Unknown", "Unknown", 0, "z")
+        assert (b.title, b.artist, b.duration, b.source_id) == ("T", "Unknown", 7, "u")
+        assert (a.source, a.bitrate, a.filesize) == ("youtube", 160, 0)
+
+    async def test_search_has_a_timeout(self, monkeypatch):
+        seen = {}
+
+        async def fake_run(*cmd, timeout=300):
+            seen["timeout"] = timeout
+            return 0, b"", b""
+        monkeypatch.setattr(yt, "_run", fake_run)
+        await yt.search("q")
+        assert seen["timeout"] == 60

@@ -47,7 +47,11 @@ if [ "$after" != "$before" ]; then
     echo "▶ waiting for the new bot to start polling"
     healthy=0
     for i in $(seq 1 20); do
-        if docker logs musicbot-platform 2>&1 | grep -q "Run polling"; then
+        # Not `docker logs | grep -q`: grep -q exits at the first match,
+        # docker logs dies of SIGPIPE, and with pipefail the check failed even
+        # though the bot was polling (false "deploy failed", 2026-10-25).
+        logs=$(docker logs musicbot-platform 2>&1)
+        if [[ "$logs" == *"Run polling"* ]]; then
             healthy=1; break
         fi
         sleep 3
