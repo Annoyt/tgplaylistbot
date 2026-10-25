@@ -11,6 +11,7 @@ import signal
 import sys
 import time
 import uuid
+import weakref
 from pathlib import Path
 
 from app.db.models import TrackInfo
@@ -80,12 +81,15 @@ async def _run(*cmd: str, timeout: float = 300) -> tuple[int, bytes, bytes]:
     return proc.returncode, out, err
 
 
-_update_lock = asyncio.Lock()
+# One lock per event loop: an asyncio.Lock binds to the loop it first waits
+# on, so a single module-level lock breaks when used from another loop.
+_update_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
 
 
 async def update_ytdlp() -> tuple[str, str] | None:
     """Upgrade yt-dlp if a newer release exists (one upgrade at a time)."""
-    async with _update_lock:
+    lock = _update_locks.setdefault(asyncio.get_running_loop(), asyncio.Lock())
+    async with lock:
         return await _update_ytdlp()
 
 

@@ -9,22 +9,23 @@ from pathlib import Path
 
 from app.db.models import TrackInfo
 from config import settings
-from services.youtube import BROWSER_UA
+from services.youtube import AUDIO_TIMEOUT_SEC, BROWSER_UA, NOT_LIVE, _run, ytdlp_error
 
 logger = logging.getLogger(__name__)
 
 async def _get_vk_creds():
     """Get VK credentials from bot_settings table."""
-    from app.db.database import get_db
+    from app.db.database import get_db_ctx
     creds = {"login": settings.vk_login, "password": settings.vk_password, "token": settings.vk_token}
     try:
-        db = await get_db()
-        # Ensure we are using the correct table schema (key-value based)
-        rows = await db.execute("SELECT key, value FROM bot_settings WHERE key IN ('vk_login', 'vk_password', 'vk_token')")
-        for row in await rows.fetchall():
-            if row["value"]:
-                k = row["key"].replace('vk_', '')
-                creds[k] = row["value"]
+        # get_db() without close() leaked a connection (and its thread) on
+        # every VK search/download.
+        async with get_db_ctx() as db:
+            rows = await db.execute("SELECT key, value FROM bot_settings WHERE key IN ('vk_login', 'vk_password', 'vk_token')")
+            for row in await rows.fetchall():
+                if row["value"]:
+                    k = row["key"].replace('vk_', '')
+                    creds[k] = row["value"]
     except Exception as e:
         logger.error(f"Failed to fetch VK creds from DB: {e}")
     return creds
@@ -356,21 +357,15 @@ async def _ytdlp_fallback(url: str, dl_dir: Path, uid: str) -> str | None:
         "--retries", "3",
         "--no-part",
         "--fixup", "detect_or_warn",
+        *NOT_LIVE,
         "-o", output_template,
+        *settings.cookie_args(),
         url,
     ]
-    for arg in settings.cookie_args():
-        cmd.insert(-1, arg)
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-
-    if proc.returncode != 0:
-        logger.error(f"yt-dlp VK fallback failed: {stderr.decode()[-500:]}")
+    rc, _, stderr = await _run(*cmd, timeout=AUDIO_TIMEOUT_SEC)
+    if rc != 0:
+        logger.error("yt-dlp VK fallback failed: %s", ytdlp_error(stderr))
         return None
 
     out_file = dl_dir / f"{uid}.mp3"

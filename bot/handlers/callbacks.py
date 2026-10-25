@@ -158,7 +158,8 @@ async def cb_download(callback: CallbackQuery) -> None:
         return
 
     track = tracks[track_idx]
-    await callback.answer(f"⏳ Скачиваю {track.artist} – {track.title}...")
+    # answerCallbackQuery text is capped at 200 chars; a long VK title made it raise
+    await callback.answer(f"⏳ Скачиваю {track.artist} – {track.title}"[:190] + "...")
     status = await callback.message.answer(f"⏳ Скачиваю: {track.artist} – {track.title} ({quality})...")
 
     try:
