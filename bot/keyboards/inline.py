@@ -2,9 +2,44 @@
 
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 from app.db.models import TrackInfo
 
+# Reply-keyboard labels (also matched as text in the audiobook handler).
+BTN_MUSIC = "🎵 Музыка"
+BTN_AUDIOBOOKS = "📚 Аудиокниги"
+
+
+def main_reply_kb() -> ReplyKeyboardMarkup:
+    """Persistent menu: switch between music and audiobook search modes."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=BTN_MUSIC), KeyboardButton(text=BTN_AUDIOBOOKS)]],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Название трека или книги…",
+    )
+
+
+
+_CALLBACK_LIMIT = 64  # Telegram's callback_data limit, in bytes
+
+
+def _fit_callback(prefix: str, value: str) -> str:
+    """``prefix + value``, with ``value`` cut to fit 64 bytes (marked by "..").
+
+    The limit is in UTF-8 bytes: a 37-character cut let a Cyrillic or emoji
+    artist name overflow it, and Telegram then rejected the whole results message.
+    """
+    room = _CALLBACK_LIMIT - len(prefix.encode())
+    raw = value.encode()
+    if len(raw) <= room:
+        return prefix + value
+    return prefix + raw[:room - 2].decode("utf-8", "ignore") + ".."
 
 
 def search_results_kb(
@@ -14,8 +49,15 @@ def search_results_kb(
     per_page: int = 10,
     sort_by: str = "",
     lossless_only: bool = False,
+    artist_name: str | None = None,
+    index_map: list[int] | None = None,
 ) -> InlineKeyboardMarkup:
-    """Build keyboard for search results: pagination + filters + playlist emojis."""
+    """Build keyboard for search results: pagination + filters + playlist emojis.
+
+    ``index_map[i]`` is the position of displayed track ``i`` in the user's
+    cached result list, which select/download look tracks up in. Pass it when
+    ``tracks`` is a sorted/filtered view of that list.
+    """
     total_pages = max(1, (total + per_page - 1) // per_page)
     buttons: list[list[InlineKeyboardButton]] = []
 
@@ -27,8 +69,9 @@ def search_results_kb(
     track_row2 = []
 
     for i in range(start, end):
-        display_idx = i - start + 1
-        btn = InlineKeyboardButton(text=f"[{display_idx}] Выбрать", callback_data=f"select_track:{i}")
+        display_idx = i + 1
+        cache_idx = index_map[i] if index_map is not None else i
+        btn = InlineKeyboardButton(text=f"[{display_idx}] Выбрать", callback_data=f"select_track:{cache_idx}:{page}")
         if len(track_row1) < 5:
             track_row1.append(btn)
         else:
@@ -68,23 +111,84 @@ def search_results_kb(
     buttons.append([
         InlineKeyboardButton(text=br_text, callback_data=f"filter:br:{br_val}:{page}"),
         InlineKeyboardButton(text=lossless_text, callback_data=f"filter:lossless:{int(not lossless_only)}:{page}"),
-        InlineKeyboardButton(text="Title", callback_data=f"filter:title:asc:{page}"),
     ])
+
+    if artist_name:
+        buttons.append([
+            InlineKeyboardButton(text="🌟 Популярные треки", callback_data=_fit_callback("popular_artist:", artist_name))
+        ])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def track_detail_kb(track_index: int, is_private: bool = False) -> InlineKeyboardMarkup:
+def track_detail_kb(track_index: int, source_name: str = "MP3", is_admin: bool = False, is_cached: bool = False, page: int = 1) -> InlineKeyboardMarkup:
     """Keyboard for a specific track: only downloads."""
     buttons = []
 
+    if is_cached:
+        buttons.append([
+            InlineKeyboardButton(text="⚡ Скачать быстро (из кэша)", callback_data=f"dl:{track_index}:mp3_320"),
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="🔄 Перекачать заново", callback_data=f"dl:{track_index}:mp3_320:1")
+        ])
+    else:
+        buttons.append([
+            InlineKeyboardButton(text=f"📥 Скачать из {source_name}", callback_data=f"dl:{track_index}:mp3_320"),
+        ])
+
     buttons.append([
-        InlineKeyboardButton(text="⬇️ Скачать MP3", callback_data=f"dl:{track_index}:mp3_320"),
-        InlineKeyboardButton(text="⬇️ Скачать FLAC", callback_data=f"dl:{track_index}:flac"),
+        InlineKeyboardButton(text="⬅️ Назад к списку", callback_data=f"back_to_list:{page}")
     ])
-    buttons.append([InlineKeyboardButton(text="← Назад к списку", callback_data="back_to_list")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+
+
+def link_menu_kb(token: str) -> InlineKeyboardMarkup:
+    """What to do with a pasted link: the video, its audio, or find its track."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🎬 Скачать видео", callback_data=f"lv:{token}"),
+            InlineKeyboardButton(text="🎧 Звук MP3", callback_data=f"lva:{token}"),
+        ],
+        [InlineKeyboardButton(text="🎵 Найти трек из видео", callback_data=f"lr:{token}")],
+    ])
+
+
+def _mb_label(base: str, size_bytes: int) -> str:
+    """Append an approx size like '720p (~18MB)' when known.
+
+    Small files get KB / one decimal: whole MB showed a 220KB Short as "~0MB".
+    """
+    if not size_bytes or size_bytes <= 0:
+        return base
+    mb = size_bytes / (1024 * 1024)
+    if mb < 1:
+        size = f"{max(1, round(size_bytes / 1024))}KB"
+    elif mb < 10:
+        size = f"{mb:.1f}MB"
+    else:
+        size = f"{mb:.0f}MB"
+    return f"{base} (~{size})"
+
+
+def video_res_kb(token: str, sizes: dict | None = None) -> InlineKeyboardMarkup:
+    """Resolution picker + audio-only / send-as-file options.
+
+    ``sizes`` (from youtube.probe_video_sizes) annotates buttons with ~MB.
+    """
+    sizes = sizes or {}
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=_mb_label("🏆 Лучшее", sizes.get("best", 0)), callback_data=f"lvr:{token}:best"),
+            InlineKeyboardButton(text=_mb_label("720p", sizes.get("720", 0)), callback_data=f"lvr:{token}:720"),
+            InlineKeyboardButton(text=_mb_label("360p", sizes.get("360", 0)), callback_data=f"lvr:{token}:360"),
+        ],
+        [
+            InlineKeyboardButton(text="🎵 Только звук (MP3)", callback_data=f"lva:{token}"),
+            InlineKeyboardButton(text="📄 Как файл", callback_data=f"lvf:{token}"),
+        ],
+    ])
 
 
 def settings_kb(quality: str, priority: str) -> InlineKeyboardMarkup:
@@ -111,4 +215,39 @@ def confirm_topic_kb(emoji: str, track_idx: int = 0) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="✅ Да", callback_data=f"topic:create:{emoji}:{track_idx}"),
             InlineKeyboardButton(text="❌ Нет", callback_data="topic:cancel"),
         ],
+    ])
+
+
+# ── Audiobooks ────────────────────────────────────────────────────────────
+def audiobook_results_kb(
+    total: int, page: int, per_page: int = 6
+) -> InlineKeyboardMarkup:
+    """Select buttons + pagination for audiobook search results."""
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    start = (page - 1) * per_page
+    end = min(start + per_page, total)
+    buttons: list[list[InlineKeyboardButton]] = []
+
+    for i in range(start, end):
+        buttons.append([
+            InlineKeyboardButton(text=f"📖 [{i + 1}] Выбрать", callback_data=f"bsel:{i}:{page}")
+        ])
+
+    nav: list[InlineKeyboardButton] = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"bpage:{page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="bpage:noop"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"bpage:{page + 1}"))
+    buttons.append(nav)
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def audiobook_detail_kb(book_index: int, source_name: str = "", page: int = 1) -> InlineKeyboardMarkup:
+    """Keyboard for one audiobook: download + back."""
+    label = f"📥 Скачать книгу из {source_name}" if source_name else "📥 Скачать книгу"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data=f"bdl:{book_index}")],
+        [InlineKeyboardButton(text="⬅️ Назад к списку", callback_data=f"bback:{page}")],
     ])

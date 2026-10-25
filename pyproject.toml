@@ -18,9 +18,33 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 python_files = "test_*.py"
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
 ]
+
+[tool.coverage.run]
+source = ["app", "bot", "services", "config", "run"]
+omit = ["tests/*"]
+
+[tool.mutmut]
+# Copy the whole app into mutants/, but only mutate the logic-heavy modules
+# that have focused unit tests. Run: .venv/bin/mutmut run && .venv/bin/mutmut results
+source_paths = ["app", "bot", "services", "config.py", "run.py"]
+also_copy = ["tests", "pyproject.toml"]
+only_mutate = [
+    "bot/handlers/search.py",
+    "bot/keyboards/inline.py",
+    "bot/signature.py",
+    "services/youtube.py",
+    "services/cache.py",
+    "services/hls_downloader.py",
+    "app/db/models.py",
+    "app/auth/service.py",
+    "config.py",
+]
+pytest_add_cli_args_test_selection = ["tests/"]
+mutate_only_covered_lines = true

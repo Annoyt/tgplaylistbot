@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Global lock and timestamp to enforce download delay
 _download_lock = asyncio.Lock()
-_last_download_time = 0.0
+_last_download_time = float("-inf")  # monotonic clock; no delay before the first
 
 async def download_track(
     track: TrackInfo,
@@ -34,18 +34,19 @@ async def download_track(
     async with _download_lock:
         g_settings = await get_global_settings()
         delay = g_settings.download_delay_sec
-        now = time.time()
+        now = time.monotonic()
         elapsed = now - _last_download_time
         if elapsed < delay:
             wait_time = delay - elapsed
             logger.info(f"Enforcing download delay, sleeping for {wait_time:.1f}s")
             await asyncio.sleep(wait_time)
 
-        _last_download_time = time.time()
+        _last_download_time = time.monotonic()
 
     # Lock released, now download
+    file_path = None
     if track.source == "youtube":
-        return await yt_service.download(track, quality)
+        file_path = await yt_service.download(track, quality)
     elif track.source == "vk":
         # Create captcha handler if bot info is provided
         c_handler = None
@@ -54,16 +55,47 @@ async def download_track(
             
         # Add to my audios as an anti-bot measure before downloading
         await vk_service.add_track_to_my_audios(track, captcha_handler=c_handler)
-        return await vk_service.download(track, quality, captcha_handler=c_handler)
+        file_path = await vk_service.download(track, quality, captcha_handler=c_handler)
     elif track.source == "spotify":
         query = f"{track.artist} {track.title}"
         yt_results = await yt_service.search(query, count=1)
         if yt_results:
-            return await yt_service.download(yt_results[0], quality)
+            file_path = await yt_service.download(yt_results[0], quality)
+
+    if not file_path:
+        logger.warning(f"Download failed for {track.source}: {track.title}")
         return None
-    else:
-        logger.warning(f"Unknown source: {track.source}")
-        return None
+
+    # Apply ID3 Metadata using a fast FFmpeg copy pass
+    # Keep the real extension last: ffmpeg picks the container from it, and
+    # "x.flac.tagged" failed ("Unable to choose an output format"), so FLAC
+    # never got tags.
+    root, ext = os.path.splitext(file_path)
+    tagged_path = f"{root}.tagged{ext}"
+    cmd = [
+        "ffmpeg", "-y", "-i", file_path,
+        "-c", "copy",
+        "-metadata", f"title={track.title}",
+        "-metadata", f"artist={track.artist}",
+        tagged_path
+    ]
+    
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        if proc.returncode == 0 and os.path.exists(tagged_path) and os.path.getsize(tagged_path) > 0:
+            os.replace(tagged_path, file_path)
+            logger.info("Successfully added ID3 tags to %s", file_path)
+        else:
+            logger.warning("Failed to add ID3 tags to %s", file_path)
+            if os.path.exists(tagged_path):
+                os.remove(tagged_path)
+    except Exception as e:
+        logger.error("Exception adding ID3 tags: %s", e)
+
+    return file_path
 
 
 
@@ -78,14 +110,26 @@ def cleanup_file(file_path: str) -> None:
         logger.warning("Cleanup failed for %s: %s", file_path, e)
 
 
-def cleanup_download_dir() -> None:
-    """Remove all files in the download directory."""
+def cleanup_download_dir(older_than_sec: int = 3600) -> int:
+    """Remove leftover files older than ``older_than_sec`` from the download dir.
+
+    Age-based so we never delete a file that's mid-download or mid-send for
+    another user. Returns how many files were removed.
+    """
+    import time
+
     dl = settings.download_path
     if not dl.exists():
-        return
+        return 0
+    cutoff = time.time() - older_than_sec
+    removed = 0
     for f in dl.iterdir():
-        if f.is_file():
-            try:
+        if not f.is_file():
+            continue
+        try:
+            if f.stat().st_mtime < cutoff:
                 f.unlink()
-            except Exception:
-                pass
+                removed += 1
+        except Exception:
+            pass
+    return removed
