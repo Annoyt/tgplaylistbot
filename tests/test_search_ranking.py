@@ -326,3 +326,165 @@ class TestEditsRankBelowOriginal:
         other = make_track(artist="Metallica", title="One", duration=446)
         b = make_track(artist="Imagine Dragons", title="Believer [Live]", source="vk", bitrate=320, duration=216)
         assert s._group_same_track([a, other, b]) == [b, a, other]
+
+
+# ── written to kill surviving mutants (mutmut) ─────────────────────────────
+
+from difflib import SequenceMatcher  # noqa: E402
+
+
+class TestRelevanceComponents:
+    def test_title_only_similarity_counts(self, make_track):
+        # uploader name is noise; only the title-vs-title ratio reaches 1.0
+        t = make_track(artist="Some Random Uploader", title="Believer")
+        assert s.relevance_score(t, "", "Believer") == 1.0
+
+    def test_title_containment_bonus_is_added(self, make_track):
+        t = make_track(artist="x", title="Believer extended radio edit version")
+        q, tt = "believer", "believer extended radio edit version"
+        base = max(SequenceMatcher(None, q, tt).ratio(), SequenceMatcher(None, q, "x " + tt).ratio(),
+                   s._token_set_ratio(q, "x " + tt))
+        assert s.relevance_score(t, "", "Believer") == pytest.approx(base + 0.12)
+
+    def test_artist_containment_bonus_is_added(self, make_track):
+        t = make_track(artist="Imagine Dragons", title="Completely Different Words Here")
+        q_c, t_c = "imagine dragons zzz", "imagine dragons completely different words here"
+        base = max(SequenceMatcher(None, "zzz", "completely different words here").ratio(),
+                   SequenceMatcher(None, q_c, t_c).ratio(), s._token_set_ratio(q_c, t_c))
+        assert s.relevance_score(t, "Imagine Dragons", "zzz") == pytest.approx(base + 0.12)
+
+    def test_no_bonus_without_containment(self, make_track):
+        t = make_track(artist="aa", title="bb")
+        base = max(SequenceMatcher(None, "dd", "bb").ratio(), SequenceMatcher(None, "cc dd", "aa bb").ratio(),
+                   s._token_set_ratio("cc dd", "aa bb"))
+        assert s.relevance_score(t, "cc", "dd") == pytest.approx(base)
+
+
+class TestQualityBoundaries:
+    def test_tiny_known_bitrate_is_used(self, make_track):
+        assert s.quality_score(make_track(bitrate=1, source="youtube")) == pytest.approx(1 / 320)
+
+    def test_known_bitrate_beats_size_estimate(self, make_track):
+        t = make_track(bitrate=160, duration=200, filesize=8_000_000)   # size alone would say 320k
+        assert s.quality_score(t) == pytest.approx(0.5)
+
+    def test_one_byte_file_is_derived_not_defaulted(self, make_track):
+        assert s.quality_score(make_track(duration=100, filesize=1)) == pytest.approx(8e-5 / 320, abs=1e-9)
+
+    def test_zero_duration_with_size_uses_default(self, make_track):
+        assert s.quality_score(make_track(duration=0, filesize=5000, source="youtube")) == pytest.approx(0.6)
+
+    def test_one_second_duration_is_derived(self, make_track):
+        assert s.quality_score(make_track(duration=1, filesize=40_000)) == 1.0     # 320 kbps
+
+
+class TestGroupingBoundaries:
+    def test_shared_artist_different_songs_same_length_stay_apart(self, make_track):
+        a = make_track(artist="Imagine Dragons", title="Believer", duration=200)
+        x = make_track(artist="Metallica", title="One", duration=446)
+        b = make_track(artist="Imagine Dragons", title="Thunder", duration=200)
+        assert s._group_same_track([a, x, b]) == [a, x, b]
+
+    def test_second_group_can_match_after_first_mismatch(self, make_track):
+        g1 = make_track(artist="Metallica", title="One", duration=446)
+        g2 = make_track(artist="Imagine Dragons", title="Believer", duration=204)
+        dup = make_track(artist="Imagine Dragons", title="Believer", source="vk", bitrate=320, duration=205)
+        assert s._group_same_track([g1, g2, dup]) == [g1, dup, g2]
+
+    def test_tokenless_track_never_merges(self, make_track):
+        empty = make_track(artist="", title="the official video", duration=200)
+        x = make_track(artist="Metallica", title="One", duration=446)
+        real = make_track(artist="A", title="Song", duration=200)
+        assert s._group_same_track([empty, x, real]) == [empty, x, real]
+        assert s._group_same_track([real, x, empty]) == [real, x, empty]
+
+    @pytest.mark.parametrize("d1,d2", [(0, 200), (200, 0)])
+    def test_unknown_duration_still_merges(self, make_track, d1, d2):
+        a = make_track(artist="A", title="Song", duration=d1)
+        x = make_track(artist="Metallica", title="One", duration=446)
+        b = make_track(artist="A", title="Song", source="vk", bitrate=320, duration=d2)
+        assert s._group_same_track([a, x, b]) == [b, a, x]
+
+    def test_exactly_30_percent_longer_merges(self, make_track):
+        a = make_track(artist="A", title="Song", duration=200)
+        x = make_track(artist="Metallica", title="One", duration=446)
+        b = make_track(artist="A", title="Song", source="vk", bitrate=320, duration=260)
+        assert s._group_same_track([a, x, b]) == [b, a, x]
+
+    def test_half_longer_does_not_merge(self, make_track):
+        a = make_track(artist="A", title="Song", duration=200)
+        x = make_track(artist="Metallica", title="One", duration=446)
+        b = make_track(artist="A", title="Song", source="vk", bitrate=320, duration=300)
+        assert s._group_same_track([a, x, b]) == [a, x, b]
+
+    def test_exactly_70_percent_overlap_merges(self, make_track):
+        a = make_track(artist="w1 w2 w3 w4 w5", title="w6 w7 w8 w9 w10", duration=200)
+        x = make_track(artist="Metallica", title="One", duration=446)
+        b = make_track(artist="w1 w2 w3 w4 w5", title="w6 w7 q8 q9 q10", source="vk", bitrate=320, duration=200)
+        assert s._group_same_track([a, x, b]) == [b, a, x]
+
+    def test_two_letter_words_are_tokens_one_letter_are_not(self, make_track):
+        assert s._track_tokens(make_track(artist="AC DC", title="x")) == {"ac", "dc"}
+
+
+class TestRankingBoundaries:
+    def test_quality_decides_between_equally_relevant_songs(self, make_track):
+        low = make_track(artist="B", title="Song", source="youtube", bitrate=128)
+        high = make_track(artist="A", title="Song", source="vk", bitrate=320)
+        assert s.rank_by_relevance([low, high], "", "Song")[0] is high
+
+    def test_longform_query_does_not_sink_long_items(self, make_track):
+        mix = make_track(artist="Chill", title="Lofi mix podcast", duration=7200)
+        short = make_track(artist="Other", title="Lofi", duration=200, source="youtube", bitrate=1)
+        out = s.rank_by_relevance([short, mix], "", "lofi mix podcast")
+        assert out[0] is mix
+
+    def test_score_equal_to_min_is_kept(self, make_track):
+        t = make_track(artist="A", title="Song")
+        rel = s.relevance_score(t, "A", "Song")
+        assert s.rank_by_relevance([t], "A", "Song", min_score=rel) == [t]
+
+    def test_reference_length_ignores_unknown_durations(self, make_track):
+        unknown = make_track(artist="Z", title="Song", duration=0)
+        long_ = make_track(artist="X", title="Song", duration=210)
+        exact = make_track(artist="Y", title="Song", duration=200)
+        # median of known lengths = 205 → both equidistant → original order (long_ first)
+        out = s.rank_by_relevance([long_, exact, unknown], "", "Song")
+        assert out.index(long_) < out.index(exact)
+
+
+class TestSmallHelpers:
+    def test_tag_pattern_whole_words_longest_first_and_escaped(self):
+        p = s._tag_pattern(("sped up", "sped", "8d", "a+b"))
+        assert s._tags_in("Song (Sped Up) 8D a+b", p) == {"sped up", "8d", "a+b"}
+        assert s._tags_in("speedy 8dd", p) == set()
+
+    def test_soft_tag_and_long_duration_add_up(self, make_track):
+        assert s._junk_penalty(make_track(title="Greatest Hits", duration=1500), "x", False) == pytest.approx(1.6)
+        assert s._junk_penalty(make_track(title="Episode 1", duration=700), "x", False) == pytest.approx(2.2)
+
+    def test_duration_score_at_one(self):
+        assert s._duration_score(1, 1.0) == 1.0
+        assert s._duration_score(2, 1.0) == 0.0
+
+    def test_topic_suffix_without_dash_is_official(self, make_track):
+        assert s._is_official(make_track(artist="ImagineDragonsTopic"))
+
+    def test_no_badge_for_unofficial(self, make_track):
+        assert "✅" not in s._format_results([make_track(artist="7clouds", title="Song")], 1, 10, 1)
+
+
+class TestSortBoundaries:
+    def test_title_sort_is_lowercase_based(self, make_track):
+        under, b = make_track(title="_x"), make_track(title="b")
+        assert s.sort_tracks([b, under], "title") == [under, b]
+
+    def test_estimate_constant_is_20_kib_per_second(self, make_track):
+        just_bigger = make_track(duration=200, filesize=200 * 20 * 1024 + 1)
+        estimated = make_track(duration=200, filesize=0)
+        assert s.sort_tracks([estimated, just_bigger], "default") == [just_bigger, estimated]
+
+    def test_one_byte_file_is_not_estimated(self, make_track):
+        tiny = make_track(duration=200, filesize=1)
+        estimated = make_track(duration=200, filesize=0)
+        assert s.sort_tracks([tiny, estimated], "default") == [estimated, tiny]

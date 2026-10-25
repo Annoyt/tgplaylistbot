@@ -159,3 +159,73 @@ class TestFitCallback:
         out = kb._fit_callback("p:", "Ж" * 40)          # 80 bytes of 2-byte letters
         assert out.endswith("..") and len(out.encode()) <= 64
         assert set(out[2:-2]) == {"Ж"}
+
+
+# ── full snapshots (kill text/flag mutants) ────────────────────────────────
+
+def snapshot(markup):
+    return [[(b.text, b.callback_data) for b in row] for row in markup.inline_keyboard]
+
+
+class TestSnapshots:
+    def test_settings_mp3(self):
+        assert snapshot(kb.settings_kb("mp3_320", "youtube,vk,spotify")) == [
+            [("🎵 Качество", "set:header")],
+            [("✅ MP3 320kbps", "set:quality:mp3_320"), ("FLAC", "set:quality:flac")],
+            [("🔄 Приоритет платформ", "set:header2")],
+            [("📋 youtube,vk,spotify", "set:priority:cycle")],
+            [("❌ Закрыть", "set:close")],
+        ]
+
+    def test_main_reply_keyboard_flags(self):
+        m = kb.main_reply_kb()
+        assert [b.text for b in m.keyboard[0]] == ["🎵 Музыка", "📚 Аудиокниги"]
+        assert m.resize_keyboard is True and m.is_persistent is True
+        assert m.input_field_placeholder == "Название трека или книги…"
+
+    def test_video_res_full(self):
+        assert snapshot(kb.video_res_kb("t")) == [
+            [("🏆 Лучшее", "lvr:t:best"), ("720p", "lvr:t:720"), ("360p", "lvr:t:360")],
+            [("🎵 Только звук (MP3)", "lva:t"), ("📄 Как файл", "lvf:t")],
+        ]
+
+    def test_track_detail_full(self):
+        assert snapshot(kb.track_detail_kb(2, is_cached=True, page=4)) == [
+            [("⚡ Скачать быстро (из кэша)", "dl:2:mp3_320")],
+            [("🔄 Перекачать заново", "dl:2:mp3_320:1")],
+            [("⬅️ Назад к списку", "back_to_list:4")],
+        ]
+        assert snapshot(kb.track_detail_kb(2)) == [
+            [("📥 Скачать из MP3", "dl:2:mp3_320")], [("⬅️ Назад к списку", "back_to_list:1")]]
+
+    def test_confirm_topic_full(self):
+        assert snapshot(kb.confirm_topic_kb("🔥")) == [[("✅ Да", "topic:create:🔥:0"), ("❌ Нет", "topic:cancel")]]
+
+    def test_search_results_full_small(self, make_track):
+        m = kb.search_results_kb([make_track()] * 3, page=1, total=3, artist_name="A")
+        assert snapshot(m) == [
+            [("[1] Выбрать", "select_track:0:1"), ("[2] Выбрать", "select_track:1:1"), ("[3] Выбрать", "select_track:2:1")],
+            [("·1·", "page:1::0")],
+            [("BR: ↑", "filter:br:bitrate_desc:1"), ("Lossless: ❌", "filter:lossless:1:1")],
+            [("🌟 Популярные треки", "popular_artist:A")],
+        ]
+
+    def test_search_results_last_of_many_pages(self, make_track):
+        m = kb.search_results_kb([make_track()] * 100, page=10, total=100, sort_by="title")
+        nav1, nav2 = m.inline_keyboard[2], m.inline_keyboard[3]
+        assert [b.text for b in nav1] == ["◀️", "1", "2", "3", "4", "5"]          # no ▶️ on the last page
+        assert nav1[0].callback_data == "page:9:title:0"
+        assert [b.text for b in nav2] == ["6", "7", "8", "9", "·10·"]
+
+    def test_search_results_exactly_five_pages_has_one_row_and_no_arrow(self, make_track):
+        m = kb.search_results_kb([make_track()] * 50, page=1, total=50)
+        assert [b.text for b in m.inline_keyboard[2]] == ["·1·", "2", "3", "4", "5"]
+        assert m.inline_keyboard[3][0].text.startswith("BR")
+
+    def test_audiobook_first_page(self):
+        assert snapshot(kb.audiobook_results_kb(total=8, page=1, per_page=6))[-1] == [
+            ("1/2", "bpage:noop"), ("▶️", "bpage:2")]
+        assert snapshot(kb.audiobook_results_kb(total=8, page=1, per_page=6))[0] == [("📖 [1] Выбрать", "bsel:0:1")]
+
+    def test_audiobook_detail_full(self):
+        assert snapshot(kb.audiobook_detail_kb(1)) == [[("📥 Скачать книгу", "bdl:1")], [("⬅️ Назад к списку", "bback:1")]]

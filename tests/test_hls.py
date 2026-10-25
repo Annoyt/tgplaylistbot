@@ -186,3 +186,109 @@ class TestDownloadHls:
         mocked["fail"] = {"s1.ts"}
         assert not await hls.download_hls(BASE + "index.m3u8", tmp_path / "out.mp3")
         assert "concat" not in mocked
+
+
+# ── written to kill surviving mutants (mutmut) ─────────────────────────────
+
+async def resolve_master(master_text, variants):
+    def handler(req):
+        name = req.url.path.rsplit("/", 1)[-1]
+        if name == "master.m3u8":
+            return httpx.Response(200, text=master_text)
+        return httpx.Response(200, text=f"#EXTINF:1,\n{variants[name]}")
+    async with client_for(handler) as c:
+        return [s.url for s in await hls._resolve_segments(c, BASE + "master.m3u8")]
+
+
+class TestMasterPlaylistEdges:
+    async def test_best_variant_listed_first(self):
+        master = "#EXT-X-STREAM-INF:BANDWIDTH=320000\nhigh.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=64000\nlow.m3u8\n"
+        assert await resolve_master(master, {"high.m3u8": "h.ts", "low.m3u8": "l.ts"}) == [BASE + "h.ts"]
+
+    async def test_variant_without_bandwidth_is_still_usable(self):
+        master = "#EXT-X-STREAM-INF:CODECS=\"mp4a\"\nonly.m3u8\n"
+        assert await resolve_master(master, {"only.m3u8": "o.ts"}) == [BASE + "o.ts"]
+
+    async def test_bandwidth_beats_missing_bandwidth(self):
+        master = "#EXT-X-STREAM-INF:CODECS=\"x\"\nnobw.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=1\nbw.m3u8\n"
+        assert await resolve_master(master, {"nobw.m3u8": "n.ts", "bw.m3u8": "b.ts"}) == [BASE + "b.ts"]
+
+    async def test_equal_bandwidth_keeps_first(self):
+        master = "#EXT-X-STREAM-INF:BANDWIDTH=5\na.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=5\nb.m3u8\n"
+        assert await resolve_master(master, {"a.m3u8": "a.ts", "b.m3u8": "b.ts"}) == [BASE + "a.ts"]
+
+    async def test_blank_lines_before_uri_are_skipped(self):
+        master = "#EXT-X-STREAM-INF:BANDWIDTH=5\n\n   \nv.m3u8\n"
+        assert await resolve_master(master, {"v.m3u8": "v.ts"}) == [BASE + "v.ts"]
+
+
+class TestMediaPlaylistEdges:
+    def test_plain_segments_have_no_key_or_iv(self):
+        (seg,) = hls._parse_media_playlist("#EXTINF:2,\na.ts", BASE)
+        assert seg.key_url is None and seg.iv is None and seg.key_method == "NONE"
+
+    def test_key_without_method_counts_as_none(self):
+        (seg,) = hls._parse_media_playlist('#EXT-X-KEY:URI="k",IV=0x1\n#EXTINF:2,\na.ts', BASE)
+        assert (seg.key_method, seg.key_url, seg.iv) == ("NONE", None, None)
+
+    def test_method_none_clears_previous_key_even_with_uri(self):
+        m3u8 = '#EXT-X-KEY:METHOD=AES-128,URI="k"\n#EXT-X-KEY:METHOD=NONE,URI="x",IV=0x2\n#EXTINF:2,\na.ts'
+        (seg,) = hls._parse_media_playlist(m3u8, BASE)
+        assert (seg.key_url, seg.iv) == (None, None)
+
+    def test_extinf_without_number_is_zero_duration(self):
+        (seg,) = hls._parse_media_playlist("#EXTINF:,title\na.ts", BASE)
+        assert seg.duration == 0.0
+
+
+class TestEncryptedDownload:
+    async def test_aes_segments_key_fetched_once_headers_and_redirects(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(hls.asyncio, "sleep", no_wait)
+        plains = [b"\x47" + bytes([i]) * 300 for i in range(3)]
+        key_hits, seen_referers = [], set()
+        m3u8 = ('#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:5\n#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n'
+                + "".join(f"#EXTINF:10,\ns{i}.ts\n" for i in range(3)))
+
+        def handler(req):
+            seen_referers.add(req.headers.get("referer"))
+            name = req.url.path.rsplit("/", 1)[-1]
+            if name == "start.m3u8":
+                return httpx.Response(302, headers={"location": BASE + "index.m3u8"})
+            if name == "index.m3u8":
+                return httpx.Response(200, text=m3u8)
+            if name == "key.bin":
+                key_hits.append(1)
+                return httpx.Response(200, content=KEY)
+            i = int(name[1])
+            return httpx.Response(200, content=encrypt(plains[i], KEY, (5 + i).to_bytes(16, "big")))
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(hls.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+        got = {}
+
+        async def fake_concat(seg_files, out):
+            got["data"] = [f.read_bytes() for f in seg_files]
+            Path(out).write_bytes(b"mp3")
+            return True
+
+        async def fake_probe(path):
+            got["probed"] = Path(path)
+            return 30.0
+        monkeypatch.setattr(hls, "_concat_with_ffmpeg", fake_concat)
+        monkeypatch.setattr(hls, "get_duration_ffprobe", fake_probe)
+        out = tmp_path / "o.mp3"
+        assert await hls.download_hls(BASE + "start.m3u8", out, headers={"Referer": "https://vk.com/"}, expected_duration=30)
+        assert got["data"] == plains and got["probed"] == out
+        assert key_hits == [1]                                   # cached across segments
+        assert seen_referers == {"https://vk.com/"}               # headers on every request
+
+    async def test_unfetchable_key_fails(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(hls.asyncio, "sleep", no_wait)
+        m3u8 = '#EXT-X-KEY:METHOD=AES-128,URI="key.bin"\n#EXTINF:1,\ns0.ts\n'
+
+        def handler(req):
+            name = req.url.path.rsplit("/", 1)[-1]
+            return httpx.Response(200, text=m3u8) if name == "index.m3u8" else httpx.Response(404)
+        real = httpx.AsyncClient
+        monkeypatch.setattr(hls.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+        assert not await hls.download_hls(BASE + "index.m3u8", tmp_path / "o.mp3")

@@ -428,3 +428,55 @@ class TestUpdateHealing:
         monkeypatch.setattr(yt, "_update_ytdlp", slow_inner)
         await asyncio.gather(yt.update_ytdlp(), yt.update_ytdlp(), yt.update_ytdlp())
         assert peak[0] == 1
+
+
+# ── exact yt-dlp command lines (kill flag-level mutants) ───────────────────
+
+class TestExactCommands:
+    async def test_download_from_url(self, spawned, tmp_path, fixed_uid):
+        spawned.factory = lambda a: FakeProc(rc=1)
+        await yt.download_from_url("https://x", download_dir=tmp_path)
+        assert spawned.calls[0] == [
+            "yt-dlp", "-x", "--audio-format", "mp3", "--audio-quality", "0", "--hls-prefer-native",
+            "--fragment-retries", "10", "--retries", "3", "--no-part", "--fixup", "detect_or_warn",
+            "--user-agent", yt.BROWSER_UA, "--extractor-args", "youtube:player_client=default,android_vr", "-4",
+            "-o", str(tmp_path / "fixeduid.%(ext)s"), "--max-filesize", f"{yt.settings.max_file_size_mb}m",
+            "--no-playlist", "--match-filter", "!is_live", "--no-progress", "https://x",
+        ]
+
+    async def test_download_mp3(self, spawned, tmp_path, fixed_uid, make_track):
+        spawned.factory = lambda a: FakeProc(rc=1)
+        await yt.download(make_track(source_id="v"), "mp3_320", download_dir=tmp_path)
+        assert spawned.calls[0] == [
+            "yt-dlp", "-x", "--audio-format", "mp3", "--audio-quality", "0", "--postprocessor-args", "ffmpeg:-b:a 320k",
+            "--user-agent", yt.BROWSER_UA, "--extractor-args", "youtube:player_client=default,android_vr", "-4",
+            "-o", str(tmp_path / "fixeduid.%(ext)s"), "--max-filesize", f"{yt.settings.max_file_size_mb}m",
+            "--match-filter", "!is_live", "--no-progress", "https://www.youtube.com/watch?v=v",
+        ]
+
+    async def test_download_flac(self, spawned, tmp_path, fixed_uid, make_track):
+        spawned.factory = lambda a: FakeProc(rc=1)
+        await yt.download(make_track(source_id="v"), "flac", download_dir=tmp_path)
+        assert spawned.calls[0] == [
+            "yt-dlp", "-x", "--audio-format", "flac", "--audio-quality", "0",
+            "--user-agent", yt.BROWSER_UA, "--extractor-args", "youtube:player_client=default,android_vr", "-4",
+            "-o", str(tmp_path / "fixeduid.%(ext)s"), "--max-filesize", f"{yt.settings.max_file_size_mb}m",
+            "--match-filter", "!is_live", "--no-progress", "https://www.youtube.com/watch?v=v",
+        ]
+
+    async def test_download_video(self, spawned, tmp_path, fixed_uid):
+        spawned.factory = lambda a: FakeProc(rc=1)
+        await yt.download_video_from_url("https://x", max_height=360, download_dir=tmp_path)
+        limit = yt.settings.send_limit_bytes // (1024 * 1024)
+        assert spawned.calls[0] == [
+            "yt-dlp", "-f", "bv*+ba/b", "-S", "res:360", "--merge-output-format", "mp4", "--no-playlist",
+            "--fragment-retries", "10", "--retries", "3", "--no-part",
+            "--user-agent", yt.BROWSER_UA, "--extractor-args", "youtube:player_client=default,android_vr", "-4",
+            "-o", str(tmp_path / "fixeduid.%(ext)s"), "--max-filesize", f"{limit}m",
+            "--match-filter", "!is_live", "--no-progress", "https://x",
+        ]
+
+    async def test_search(self, spawned):
+        spawned.factory = lambda a: FakeProc(out=b"")
+        await yt.search("q", count=3)
+        assert spawned.calls[0] == ["yt-dlp", "ytsearch3:q", "--dump-json", "--flat-playlist", "--no-download", "--quiet"]

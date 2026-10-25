@@ -2,6 +2,8 @@
 pytest==8.3.4
 pytest-asyncio==0.25.3
 pytest-mock==3.14.0
+pytest-cov==7.1.0
+mutmut==3.8.0   # mutation testing: mutmut run && mutmut results
 httpx==0.28.1
 
 # Linting & Formatting
