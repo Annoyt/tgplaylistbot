@@ -5,11 +5,31 @@ on:
     branches: [feature/platform-musicbot, main]
   workflow_dispatch:
 
+# One deploy at a time: a newer push waits for the running deploy to finish.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # Gate: a push that breaks the tests never reaches production.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Run tests
+        run: python -m pytest -q --cov --cov-report=term
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
 
     steps:
@@ -26,12 +46,6 @@ jobs:
           ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} 'bash -s' << 'ENDSCRIPT'
             set -e
 
-            export DEBIAN_FRONTEND=noninteractive
-
-            # Установить зависимости системы
-            apt-get update -qq
-            apt-get install -y -qq git python3 python3-pip python3-venv python3-full
-
             # Создать папку проекта
             PROJECT_DIR="/root/tgplaylistbot"
             if [ ! -d "$PROJECT_DIR" ]; then
@@ -44,16 +58,9 @@ jobs:
             git checkout feature/platform-musicbot
             git reset --hard origin/feature/platform-musicbot
 
-            echo "Cleaning up old python processes to free port 8000..."
-            pkill -f "python.*run.py" || true
-            pkill -f "uvicorn" || true
-            sleep 2
-
-            echo "Rebuilding Docker containers..."
-            docker compose down || true
-            docker compose up -d --build
-
-            sleep 3
-            echo "✅ Деплой завершён!"
-            echo "Логи: docker logs --tail 50 musicbot-platform"
+            # Собираем образ, пока старый бот работает, потом быстро меняем
+            # контейнер (простой — секунды, а не вся сборка). Без `compose down`
+            # и pkill: pkill с хоста убивал python run.py внутри контейнера.
+            # Скрипт падает, если новый бот не начал polling.
+            ./deploy.sh
           ENDSCRIPT

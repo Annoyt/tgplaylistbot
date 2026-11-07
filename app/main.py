@@ -20,7 +20,11 @@ async def lifespan(application: FastAPI):
     yield
 
 
-app = FastAPI(title="VK Music Bot Platform", lifespan=lifespan)
+# No /docs, /redoc, /openapi.json: the app is public and they map every admin route.
+app = FastAPI(
+    title="VK Music Bot Platform", lifespan=lifespan,
+    docs_url=None, redoc_url=None, openapi_url=None,
+)
 
 # Static files
 app.mount("/static", StaticFiles(directory="app/static"), name="static")

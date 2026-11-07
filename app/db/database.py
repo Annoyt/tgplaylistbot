@@ -94,6 +94,7 @@ async def init_db() -> None:
                 track_json      TEXT NOT NULL,
                 route_at        INTEGER DEFAULT 0,
                 route_emoji     TEXT DEFAULT '',
+                original_msg_id INTEGER,
                 created_at      TEXT DEFAULT (datetime('now'))
             );
                         CREATE TABLE IF NOT EXISTS track_votes (
@@ -134,22 +135,17 @@ async def init_db() -> None:
 
         await db.commit()
 
-        # Migrations
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN nickname TEXT")
-            await db.commit()
-        except Exception:
-            pass # Column likely exists
-
-        try:
-            await db.execute("ALTER TABLE search_sessions ADD COLUMN original_msg_id INTEGER")
-            await db.commit()
-        except Exception:
-            pass
-
-        try:
-            await db.execute("ALTER TABLE pending_tracks ADD COLUMN route_at INTEGER DEFAULT 0")
-            await db.execute("ALTER TABLE pending_tracks ADD COLUMN route_emoji TEXT DEFAULT ''")
-            await db.commit()
-        except Exception:
-            pass
+        # Migrations for databases created before these columns existed. One
+        # statement per try: an already-present column must not skip the rest.
+        for stmt in (
+            "ALTER TABLE users ADD COLUMN nickname TEXT",
+            "ALTER TABLE search_sessions ADD COLUMN original_msg_id INTEGER",
+            "ALTER TABLE pending_tracks ADD COLUMN route_at INTEGER DEFAULT 0",
+            "ALTER TABLE pending_tracks ADD COLUMN route_emoji TEXT DEFAULT ''",
+            "ALTER TABLE pending_tracks ADD COLUMN original_msg_id INTEGER",
+        ):
+            try:
+                await db.execute(stmt)
+                await db.commit()
+            except Exception:
+                pass  # column already exists

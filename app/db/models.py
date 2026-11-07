@@ -49,10 +49,22 @@ class TrackInfo:
 
     @property
     def size_str(self) -> str:
-        if self.filesize <= 0:
+        if self.filesize > 0:
+            mb = self.filesize / (1024 * 1024)
+            return f"{mb:.1f}M"
+        
+        # Estimate size if unknown
+        if self.duration <= 0:
             return "—"
-        mb = self.filesize / (1024 * 1024)
-        return f"{mb:.1f}M"
+        
+        # Determine bitrate for estimation
+        est_bitrate = self.bitrate
+        if est_bitrate <= 0:
+            est_bitrate = 320 if self.source == "vk" else 128
+            
+        # size (MB) = duration (sec) * bitrate (kbps) / 8 / 1024
+        mb = (self.duration * est_bitrate) / (8 * 1024)
+        return f"~{mb:.1f}M"
 
     @property
     def bitrate_str(self) -> str:
@@ -68,17 +80,18 @@ class TrackInfo:
             if est_kbps > 20: # Sanity check
                 return f"~{est_kbps}k"
 
-        # If all else fails, assume 320k or similar depending on platform.
-        # But YouTube is often 128k/160k, VK is 320k.
-        if self.source == "vk": return "~320k"
-        if self.source == "youtube": return "~128k"
-
-        return "—"
+        # Keep listing clean: don't show estimated bitrate before download
+        return ""
 
     @property
     def source_icon(self) -> str:
         icons = {"youtube": "▶️YT", "vk": "🎵VK", "spotify": "🟢SP"}
         return icons.get(self.source, self.source)
+
+    @property
+    def source_name(self) -> str:
+        names = {"youtube": "YouTube", "vk": "VK", "spotify": "Spotify"}
+        return names.get(self.source, self.source.title())
 
 
 @dataclass

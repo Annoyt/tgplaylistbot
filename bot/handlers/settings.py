@@ -35,7 +35,10 @@ async def _get_user_settings(user_id: int) -> UserSettings:
                 results_per_page=data["results_per_page"],
                 platform_priority=data["platform_priority"],
             )
-        # Create default
+        # Create default. user_settings references users(id) (foreign keys
+        # are on), and only group joins / /nickname created users rows, so
+        # /settings from a plain DM user failed with IntegrityError.
+        await db.execute("INSERT OR IGNORE INTO users (id) VALUES (?)", (user_id,))
         await db.execute(
             "INSERT INTO user_settings (user_id) VALUES (?)", (user_id,)
         )

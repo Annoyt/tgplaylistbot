@@ -21,7 +21,9 @@ def _get_sp() -> spotipy.Spotify | None:
             client_id=settings.spotify_client_id,
             client_secret=settings.spotify_client_secret,
         )
-        return spotipy.Spotify(auth_manager=auth)
+        # No retries: spotipy retries 429s honouring Retry-After (up to hours),
+        # which stalled every search/recognition waiting on Spotify.
+        return spotipy.Spotify(auth_manager=auth, requests_timeout=5, retries=0, status_retries=0)
     except Exception as e:
         logger.error("Spotify init failed: %s", e)
         return None
@@ -36,8 +38,9 @@ async def search(query: str, count: int = 30) -> list[TrackInfo]:
     try:
         import asyncio
 
-        results = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: sp.search(q=query, limit=min(count, 50), type="track")
+        results = await asyncio.wait_for(
+            asyncio.to_thread(sp.search, q=query, limit=min(count, 50), type="track"),
+            timeout=15,
         )
         items = results.get("tracks", {}).get("items", [])
 
