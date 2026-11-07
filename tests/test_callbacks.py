@@ -192,3 +192,60 @@ class TestDownload:
         # the newer DM session (1234) must not leak into the group
         assert [tuple(r) for r in rows] == [(-100, 900, 600, 11)]
         assert "🤖" not in callback.message.answer_audio.await_args.kwargs["caption"]
+
+
+class TestLongResultLists:
+    """Lists of 200+ results: page clamping and re-tapping the current page."""
+
+    @pytest.fixture
+    def many(self, make_track):
+        tracks = [make_track(title=f"T{i}", artist="A", bitrate=320 if i < 15 else 128, source_id=f"s{i}")
+                  for i in range(260)]
+        search._search_cache[42] = tracks
+        yield tracks
+        search._search_cache.pop(42, None)
+
+    async def test_last_page_of_260(self, many):
+        callback, _ = make_callback("page:26::0")
+        await cb.cb_page(callback)
+        text = callback.message.edit_text.await_args.args[0]
+        assert text.startswith("🔍 Результаты 251-260 из 260")
+        assert select_buttons(callback.message.edit_text.await_args.kwargs["reply_markup"])[-1] == "select_track:259:26"
+
+    async def test_filter_clamps_page_to_what_is_left(self, many):
+        # Lossless on at page 20: 15 tracks are left = 2 pages → show page 2,
+        # not "191-15 из 15" with no tracks.
+        callback, _ = make_callback("filter:lossless:1:20")
+        await cb.cb_filter(callback)
+        text = callback.message.edit_text.await_args.args[0]
+        assert text.startswith("🔍 Результаты 11-15 из 15")
+        assert select_buttons(callback.message.edit_text.await_args.kwargs["reply_markup"]) == [
+            f"select_track:{i}:2" for i in range(10, 15)]
+
+    async def test_back_to_list_clamps_page(self, many):
+        callback, _ = make_callback("back_to_list:99")
+        await cb.cb_back_to_list(callback)
+        assert callback.message.edit_text.await_args.args[0].startswith("🔍 Результаты 251-260 из 260")
+        callback.answer.assert_awaited_once()
+
+    async def test_filter_with_no_matches(self, make_track):
+        search._search_cache[42] = [make_track(bitrate=128)]
+        callback, _ = make_callback("filter:lossless:1:1")
+        await cb.cb_filter(callback)
+        assert callback.message.edit_text.await_args.args[0] == "😔 Под этот фильтр ничего не подходит"
+        search._search_cache.pop(42, None)
+
+    async def test_tapping_the_shown_page_still_answers(self, many):
+        from aiogram.exceptions import TelegramBadRequest
+        callback, _ = make_callback("page:1::0")
+        callback.message.edit_text.side_effect = TelegramBadRequest(
+            method=None, message="Bad Request: message is not modified: specified new message content ...")
+        await cb.cb_page(callback)
+        callback.answer.assert_awaited_once_with()
+
+    async def test_other_edit_errors_propagate(self, many):
+        from aiogram.exceptions import TelegramBadRequest
+        callback, _ = make_callback("page:1::0")
+        callback.message.edit_text.side_effect = TelegramBadRequest(method=None, message="Bad Request: message to edit not found")
+        with pytest.raises(TelegramBadRequest):
+            await cb.cb_page(callback)

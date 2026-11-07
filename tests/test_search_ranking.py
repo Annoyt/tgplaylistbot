@@ -488,3 +488,57 @@ class TestSortBoundaries:
         tiny = make_track(duration=200, filesize=1)
         estimated = make_track(duration=200, filesize=0)
         assert s.sort_tracks([tiny, estimated], "default") == [estimated, tiny]
+
+
+class TestClampPage:
+    @pytest.mark.parametrize("page, total, expected", [
+        (1, 0, 1), (5, 0, 1), (0, 30, 1), (-3, 30, 1),
+        (3, 30, 3), (4, 30, 3), (20, 15, 2), (2, 11, 2), (2, 10, 1), (26, 260, 26), (27, 260, 26),
+    ])
+    def test_clamp(self, page, total, expected):
+        assert s.clamp_page(page, total) == expected
+
+    def test_custom_per_page(self):
+        assert s.clamp_page(9, 13, per_page=6) == 3
+
+    def test_empty_view_message(self):
+        assert s._format_results([], 1, 10, 0) == "😔 Под этот фильтр ничего не подходит"
+
+
+class TestSearchAsksForEnoughResults:
+    """30 per source capped every search at 60 results (Spotify is off on prod)."""
+
+    async def test_counts_and_full_list_reaches_the_user(self, db, monkeypatch, make_track):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        yt = AsyncMock(return_value=[make_track(title=f"Y{i}", source_id=f"y{i}") for i in range(60)])
+        vk = AsyncMock(return_value=[make_track(title=f"V{i}", source="vk", source_id=f"v{i}") for i in range(200)])
+        sp = AsyncMock(return_value=[])
+        monkeypatch.setattr(s.yt_svc, "search", yt)
+        monkeypatch.setattr(s.vk_svc, "search", vk)
+        monkeypatch.setattr(s.sp_svc, "search", sp)
+
+        status = SimpleNamespace(edit_text=AsyncMock())
+        msg = SimpleNamespace(
+            text="Сломанный воздух", message_thread_id=None, delete=AsyncMock(),
+            chat=SimpleNamespace(id=1, type="private", is_forum=False),
+            bot=SimpleNamespace(send_message=AsyncMock(return_value=status)),
+            from_user=SimpleNamespace(id=4242),
+        )
+        try:
+            await s.text_search(msg)
+            assert yt.await_args.kwargs["count"] == s.YT_SEARCH_COUNT == 60
+            assert vk.await_args.kwargs["count"] == s.VK_SEARCH_COUNT == 200
+            assert sp.await_args.kwargs["count"] == s.SP_SEARCH_COUNT == 50
+            assert status.edit_text.await_args.args[0].startswith("🔍 Результаты 1-10 из 260")
+            assert len(s.get_cached_tracks(4242)) == 260
+        finally:
+            s._search_cache.pop(4242, None)
+
+
+class TestFormatLineExact:
+    def test_unofficial_line_has_no_badge_text(self, make_track):
+        t = make_track(artist="7clouds", title="Song")
+        line = s._format_results([t], 1, 10, 1).splitlines()[2]
+        assert line == f"1. 7clouds – Song {t.duration_str} {t.source_icon} {t.size_str} {t.bitrate_str}"

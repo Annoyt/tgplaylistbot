@@ -42,6 +42,9 @@ def _fit_callback(prefix: str, value: str) -> str:
     return prefix + raw[:room - 2].decode("utf-8", "ignore") + ".."
 
 
+_PAGE_WINDOW = 10  # page-number buttons shown at once (two rows of 5)
+
+
 def search_results_kb(
     tracks: list[TrackInfo],
     page: int,
@@ -84,24 +87,38 @@ def search_results_kb(
     nav_row1: list[InlineKeyboardButton] = []
     nav_row2: list[InlineKeyboardButton] = []
 
+    def page_btn(p: int, text: str | None = None) -> InlineKeyboardButton:
+        if text is None:
+            text = f"·{p}·" if p == page else str(p)
+        return InlineKeyboardButton(text=text, callback_data=f"page:{p}:{sort_by}:{int(lossless_only)}")
+
+    # Up to 10 page numbers (two rows of 5). Past 10 pages the block slides to
+    # keep the current page in view — with fixed 1..10, pages 11+ of a long
+    # search were reachable only via ▶️ and never shown as current.
+    first = 1
+    if total_pages > _PAGE_WINDOW:
+        first = min(max(1, page - _PAGE_WINDOW // 2 + 1), total_pages - _PAGE_WINDOW + 1)
+    window = list(range(first, min(total_pages, first + _PAGE_WINDOW - 1) + 1))
+
     if page > 1:
-        nav_row1.append(InlineKeyboardButton(text="◀️", callback_data=f"page:{page-1}:{sort_by}:{int(lossless_only)}"))
-
-    for p in range(1, min(total_pages + 1, 6)):
-        text = f"·{p}·" if p == page else str(p)
-        nav_row1.append(InlineKeyboardButton(text=text, callback_data=f"page:{p}:{sort_by}:{int(lossless_only)}"))
-
+        nav_row1.append(page_btn(page - 1, "◀️"))
+    nav_row1.extend(page_btn(p) for p in window[:5])
     if total_pages > 5 and page < total_pages:
-        nav_row1.append(InlineKeyboardButton(text="▶️", callback_data=f"page:{page+1}:{sort_by}:{int(lossless_only)}"))
-
+        nav_row1.append(page_btn(page + 1, "▶️"))
     buttons.append(nav_row1)
 
-    if total_pages > 5:
-        for p in range(6, min(total_pages + 1, 11)):
-            text = f"·{p}·" if p == page else str(p)
-            nav_row2.append(InlineKeyboardButton(text=text, callback_data=f"page:{p}:{sort_by}:{int(lossless_only)}"))
-        if nav_row2:
-            buttons.append(nav_row2)
+    nav_row2.extend(page_btn(p) for p in window[5:])
+    if nav_row2:
+        buttons.append(nav_row2)
+
+    # Jumps to the ends once they scroll out of the window.
+    jumps: list[InlineKeyboardButton] = []
+    if window[0] > 1:
+        jumps.append(page_btn(1, "⏮ 1"))
+    if window[-1] < total_pages:
+        jumps.append(page_btn(total_pages, f"{total_pages} ⏭"))
+    if jumps:
+        buttons.append(jumps)
 
     # Row 3: Filters
     br_text = "BR: ↑" if sort_by != "bitrate_desc" else "BR: ↓"

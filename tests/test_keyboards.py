@@ -105,6 +105,57 @@ class TestSearchResults:
         assert artist.startswith(name) and len(name) > 0
 
 
+class TestLongResultPagination:
+    """Past 10 pages the numbers slide with the current page (was fixed 1..10)."""
+
+    @staticmethod
+    def nav(make_track, page, pages):
+        m = kb.search_results_kb([make_track()] * (pages * 10), page=page, total=pages * 10)
+        rows = snapshot(m)[2:-1]                      # between selects and filters
+        return [[text for text, _ in row] for row in rows], rows
+
+    def test_first_page_of_26(self, make_track):
+        texts, rows = self.nav(make_track, 1, 26)
+        assert texts == [["·1·", "2", "3", "4", "5", "▶️"], ["6", "7", "8", "9", "10"], ["26 ⏭"]]
+        assert rows[2][0][1] == "page:26::0"
+
+    def test_middle_page_keeps_current_in_view(self, make_track):
+        texts, rows = self.nav(make_track, 13, 26)
+        assert texts == [
+            ["◀️", "9", "10", "11", "12", "·13·", "▶️"],
+            ["14", "15", "16", "17", "18"],
+            ["⏮ 1", "26 ⏭"],
+        ]
+        assert rows[0][0][1] == "page:12::0" and rows[0][-1][1] == "page:14::0"
+        assert rows[2][0][1] == "page:1::0"
+
+    def test_last_page_window_ends_at_last(self, make_track):
+        texts, _ = self.nav(make_track, 26, 26)
+        assert texts == [["◀️", "17", "18", "19", "20", "21"], ["22", "23", "24", "25", "·26·"], ["⏮ 1"]]
+
+    def test_eleven_pages(self, make_track):
+        assert self.nav(make_track, 1, 11)[0][-1] == ["11 ⏭"]
+        texts, _ = self.nav(make_track, 6, 11)
+        assert texts == [["◀️", "2", "3", "4", "5", "·6·", "▶️"], ["7", "8", "9", "10", "11"], ["⏮ 1"]]
+
+    def test_ten_pages_need_no_jumps(self, make_track):
+        texts, _ = self.nav(make_track, 7, 10)
+        assert texts == [["◀️", "1", "2", "3", "4", "5", "▶️"], ["6", "·7·", "8", "9", "10"]]
+
+    def test_every_page_of_a_long_list_is_reachable_and_marked(self, make_track):
+        pages = 30
+        for page in range(1, pages + 1):
+            texts, _ = self.nav(make_track, page, pages)
+            flat = [t for row in texts for t in row]
+            assert f"·{page}·" in flat
+            assert ("◀️" in flat) == (page > 1) and ("▶️" in flat) == (page < pages)
+
+    def test_three_digit_pages_fit_callback_limit(self, make_track):
+        m = kb.search_results_kb([make_track()] * 1500, page=120, total=1500, sort_by="bitrate_desc",
+                                 lossless_only=True, artist_name="Очень Длинное Имя Исполнителя Из Кириллицы")
+        assert_within_limit(m)
+
+
 class TestOtherKeyboards:
     def test_track_detail_cached(self):
         m = kb.track_detail_kb(7, is_cached=True, page=3)
@@ -229,3 +280,14 @@ class TestSnapshots:
 
     def test_audiobook_detail_full(self):
         assert snapshot(kb.audiobook_detail_kb(1)) == [[("📥 Скачать книгу", "bdl:1")], [("⬅️ Назад к списку", "bback:1")]]
+
+
+class TestPageCountBoundaries:
+    def test_one_track_past_a_full_page_makes_a_new_page(self, make_track):
+        m = kb.search_results_kb([make_track()] * 11, page=1, total=11)
+        assert [b.text for b in m.inline_keyboard[2]] == ["·1·", "2"]
+
+    def test_six_pages_show_next_arrow(self, make_track):
+        m = kb.search_results_kb([make_track()] * 60, page=1, total=60)
+        assert [b.text for b in m.inline_keyboard[2]] == ["·1·", "2", "3", "4", "5", "▶️"]
+        assert [b.text for b in m.inline_keyboard[3]] == ["6"]

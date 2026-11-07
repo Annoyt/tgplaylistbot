@@ -17,7 +17,13 @@ from aiogram import F, Router
 from magic_filter import RegexpMode
 from aiogram.types import CallbackQuery, Message
 
-from bot.handlers.search import _format_results, _search_cache
+from bot.handlers.search import (
+    SP_SEARCH_COUNT,
+    VK_SEARCH_COUNT,
+    YT_SEARCH_COUNT,
+    _format_results,
+    _search_cache,
+)
 from bot.keyboards.inline import link_menu_kb, search_results_kb, video_res_kb
 from bot.signature import with_signature
 from config import settings
@@ -144,11 +150,11 @@ async def _recognize_and_search(
         )
         # Wrap artist and title in quotes for more precise search
         query = f'"{result.artist}" "{result.title}"'
-        yt_task = yt_svc.search(query, count=30)
+        yt_task = yt_svc.search(query, count=YT_SEARCH_COUNT)
         from services import spotify as sp_svc
         from services import vk_music as vk_svc
-        vk_task = vk_svc.search(query, count=30, captcha_handler=c_handler)
-        sp_task = sp_svc.search(query, count=30)
+        vk_task = vk_svc.search(query, count=VK_SEARCH_COUNT, captcha_handler=c_handler)
+        sp_task = sp_svc.search(query, count=SP_SEARCH_COUNT)
 
         results = await asyncio.gather(yt_task, vk_task, sp_task, return_exceptions=True)
         all_tracks: list[TrackInfo] = []

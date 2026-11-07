@@ -26,9 +26,31 @@ logger = logging.getLogger(__name__)
 _MAX_CACHE = 500
 _search_cache: OrderedDict[int, list[TrackInfo]] = OrderedDict()
 
+# Results requested per source. 30 each capped the list at 60 (Spotify isn't
+# configured on prod) although VK and YouTube have far more matches. Measured on
+# prod 2026-11-07, sources run in parallel: VK 200 in ~2.9 s (one API call, max
+# 300), YouTube 60 in ~3.2 s (100 took 6.3 s, 30 took 2.5 s).
+YT_SEARCH_COUNT = 60
+VK_SEARCH_COUNT = 200
+SP_SEARCH_COUNT = 50  # Spotify's per-request maximum
+
+PER_PAGE = 10
+
+
+def clamp_page(page: int, total: int, per_page: int = PER_PAGE) -> int:
+    """Page number limited to the pages that exist for ``total`` results.
+
+    Filtering keeps the page number from the button, so switching Lossless on
+    at page 15 of a long list showed "141-80 из 80" with no tracks.
+    """
+    last = max(1, (total + per_page - 1) // per_page)
+    return min(max(1, page), last)
+
 
 def _format_results(tracks: list[TrackInfo], page: int, per_page: int, total: int) -> str:
     """Format search results as numbered list."""
+    if total == 0:
+        return "😔 Под этот фильтр ничего не подходит"
     start = (page - 1) * per_page
     lines = [f"🔍 Результаты {start+1}-{min(start+per_page, total)} из {total}\n"]
 
@@ -76,9 +98,9 @@ async def text_search(message: Message) -> None:
             message.chat.id, 
             message.from_user.id
         )
-        yt_task = yt_svc.search(query, count=30)
-        vk_task = vk_svc.search(query, count=30, captcha_handler=c_handler)
-        sp_task = sp_svc.search(query, count=30)
+        yt_task = yt_svc.search(query, count=YT_SEARCH_COUNT)
+        vk_task = vk_svc.search(query, count=VK_SEARCH_COUNT, captcha_handler=c_handler)
+        sp_task = sp_svc.search(query, count=SP_SEARCH_COUNT)
 
         results = await asyncio.gather(yt_task, vk_task, sp_task, return_exceptions=True)
 
@@ -129,10 +151,9 @@ async def text_search(message: Message) -> None:
         _search_cache[user_id] = all_tracks
         if len(_search_cache) > _MAX_CACHE:
             _search_cache.popitem(last=False)
-        per_page = 10
         artist_name = all_tracks[0].artist if all_tracks else None
-        text = _format_results(all_tracks, page=1, per_page=per_page, total=len(all_tracks))
-        kb = search_results_kb(all_tracks, page=1, total=len(all_tracks), per_page=per_page, artist_name=artist_name)
+        text = _format_results(all_tracks, page=1, per_page=PER_PAGE, total=len(all_tracks))
+        kb = search_results_kb(all_tracks, page=1, total=len(all_tracks), per_page=PER_PAGE, artist_name=artist_name)
 
         await status_msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
 

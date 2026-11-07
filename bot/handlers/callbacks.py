@@ -8,11 +8,22 @@ from html import escape
 import os
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, FSInputFile
 
 from app.db.database import get_db, get_db_ctx
 from config import settings
-from bot.handlers.search import _format_results, filter_lossless, get_cached_tracks, sort_tracks
+from bot.handlers.search import (
+    PER_PAGE,
+    SP_SEARCH_COUNT,
+    VK_SEARCH_COUNT,
+    YT_SEARCH_COUNT,
+    _format_results,
+    clamp_page,
+    filter_lossless,
+    get_cached_tracks,
+    sort_tracks,
+)
 from bot.keyboards.inline import search_results_kb, track_detail_kb
 from bot.signature import with_signature
 from services.cache import generate_track_hash, get_cached_file_id, save_cached_file_id
@@ -58,13 +69,32 @@ async def cb_page(callback: CallbackQuery) -> None:
     if sort_by:
         filtered = sort_tracks(filtered, sort_by)
 
-    # Maintain artist context for the 'Popular' button
-    artist_name = filtered[0].artist if filtered else None
+    await _show_results(callback, tracks, filtered, page, sort_by, lossless)
 
-    text = _format_results(filtered, page, 10, len(filtered))
-    kb = search_results_kb(filtered, page, len(filtered), sort_by=sort_by, lossless_only=lossless,
-                           artist_name=artist_name, index_map=_index_map(tracks, filtered))
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+async def _show_results(
+    callback: CallbackQuery,
+    cached: list,
+    view: list,
+    page: int,
+    sort_by: str = "",
+    lossless: bool = False,
+) -> None:
+    """Render ``view`` (a sorted/filtered ``cached``) at ``page`` in place."""
+    page = clamp_page(page, len(view))
+    # Maintain artist context for the 'Popular' button
+    artist_name = view[0].artist if view else None
+    text = _format_results(view, page, PER_PAGE, len(view))
+    kb = search_results_kb(view, page, len(view), per_page=PER_PAGE, sort_by=sort_by,
+                           lossless_only=lossless, artist_name=artist_name,
+                           index_map=_index_map(cached, view))
+    try:
+        await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramBadRequest as e:
+        # Tapping the page that is already shown: Telegram refuses the no-op
+        # edit, and the exception used to skip answer() — the spinner hung.
+        if "message is not modified" not in str(e):
+            raise
     await callback.answer()
 
 
@@ -106,14 +136,7 @@ async def cb_filter(callback: CallbackQuery) -> None:
         sort_by = "title"
         tracks = sort_tracks(tracks, "title")
 
-    # Maintain artist context for the 'Popular' button
-    artist_name = tracks[0].artist if tracks else None
-
-    text = _format_results(tracks, page, 10, len(tracks))
-    kb = search_results_kb(tracks, page, len(tracks), sort_by=sort_by, lossless_only=lossless,
-                           artist_name=artist_name, index_map=_index_map(cached, tracks))
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    await callback.answer()
+    await _show_results(callback, cached, tracks, page, sort_by, lossless)
 
 
 async def get_audio_duration_ffprobe(file_path: str) -> int:
@@ -313,16 +336,7 @@ async def cb_back_to_list(callback: CallbackQuery) -> None:
         await callback.answer("Результаты устарели.")
         return
 
-    # Extract artist from the first result to restore "Popular" button
-    artist_name = tracks[0].artist if tracks else None
-    
-    msg_text = _format_results(tracks, page, per_page=10, total=len(tracks))
-    await callback.message.edit_text(
-        msg_text,
-        reply_markup=search_results_kb(tracks, page, total=len(tracks), per_page=10, artist_name=artist_name),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    await _show_results(callback, tracks, tracks, page)
 
 
 @router.callback_query(F.data.startswith("playlist:"))
@@ -445,9 +459,9 @@ async def cb_popular_artist(callback: CallbackQuery) -> None:
             callback.from_user.id
         )
         # Search for artist name directly
-        yt_task = yt_svc.search(artist_name, count=20)
-        vk_task = vk_svc.search(artist_name, count=20, captcha_handler=c_handler)
-        sp_task = sp_svc.search(artist_name, count=20)
+        yt_task = yt_svc.search(artist_name, count=YT_SEARCH_COUNT)
+        vk_task = vk_svc.search(artist_name, count=VK_SEARCH_COUNT, captcha_handler=c_handler)
+        sp_task = sp_svc.search(artist_name, count=SP_SEARCH_COUNT)
 
         results = await asyncio.gather(yt_task, vk_task, sp_task, return_exceptions=True)
         
