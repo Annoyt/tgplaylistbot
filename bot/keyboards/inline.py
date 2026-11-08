@@ -42,7 +42,7 @@ def _fit_callback(prefix: str, value: str) -> str:
     return prefix + raw[:room - 2].decode("utf-8", "ignore") + ".."
 
 
-_PAGE_WINDOW = 10  # page-number buttons shown at once (two rows of 5)
+_PAGE_WINDOW = 5  # page-number buttons shown at once (one row)
 
 
 def search_results_kb(
@@ -54,12 +54,14 @@ def search_results_kb(
     lossless_only: bool = False,
     artist_name: str | None = None,
     index_map: list[int] | None = None,
+    has_more: bool = False,
 ) -> InlineKeyboardMarkup:
     """Build keyboard for search results: pagination + filters + playlist emojis.
 
     ``index_map[i]`` is the position of displayed track ``i`` in the user's
     cached result list, which select/download look tracks up in. Pass it when
-    ``tracks`` is a sorted/filtered view of that list.
+    ``tracks`` is a sorted/filtered view of that list. ``has_more`` adds the
+    "Ещё" button that fetches the next batch from the sources.
     """
     total_pages = max(1, (total + per_page - 1) // per_page)
     buttons: list[list[InlineKeyboardButton]] = []
@@ -83,33 +85,25 @@ def search_results_kb(
     if track_row1: buttons.append(track_row1)
     if track_row2: buttons.append(track_row2)
 
-    # Row 1-2: Pagination
-    nav_row1: list[InlineKeyboardButton] = []
-    nav_row2: list[InlineKeyboardButton] = []
-
     def page_btn(p: int, text: str | None = None) -> InlineKeyboardButton:
         if text is None:
             text = f"·{p}·" if p == page else str(p)
         return InlineKeyboardButton(text=text, callback_data=f"page:{p}:{sort_by}:{int(lossless_only)}")
 
-    # Up to 10 page numbers (two rows of 5). Past 10 pages the block slides to
-    # keep the current page in view — with fixed 1..10, pages 11+ of a long
-    # search were reachable only via ▶️ and never shown as current.
+    # Five page numbers that slide with the current page, so every page of a
+    # long list is reachable and marked as current.
     first = 1
     if total_pages > _PAGE_WINDOW:
-        first = min(max(1, page - _PAGE_WINDOW // 2 + 1), total_pages - _PAGE_WINDOW + 1)
+        first = min(max(1, page - _PAGE_WINDOW // 2), total_pages - _PAGE_WINDOW + 1)
     window = list(range(first, min(total_pages, first + _PAGE_WINDOW - 1) + 1))
 
+    nav: list[InlineKeyboardButton] = []
     if page > 1:
-        nav_row1.append(page_btn(page - 1, "◀️"))
-    nav_row1.extend(page_btn(p) for p in window[:5])
-    if total_pages > 5 and page < total_pages:
-        nav_row1.append(page_btn(page + 1, "▶️"))
-    buttons.append(nav_row1)
-
-    nav_row2.extend(page_btn(p) for p in window[5:])
-    if nav_row2:
-        buttons.append(nav_row2)
+        nav.append(page_btn(page - 1, "◀️"))
+    nav.extend(page_btn(p) for p in window)
+    if total_pages > _PAGE_WINDOW and page < total_pages:
+        nav.append(page_btn(page + 1, "▶️"))
+    buttons.append(nav)
 
     # Jumps to the ends once they scroll out of the window.
     jumps: list[InlineKeyboardButton] = []
@@ -119,6 +113,12 @@ def search_results_kb(
         jumps.append(page_btn(total_pages, f"{total_pages} ⏭"))
     if jumps:
         buttons.append(jumps)
+
+    # Shown until a fetch comes back empty: whether a source has more is only
+    # known by asking it.
+    if has_more:
+        buttons.append([InlineKeyboardButton(
+            text="🔎 Ещё результаты", callback_data=f"more:{sort_by}:{int(lossless_only)}")])
 
     # Row 3: Filters
     br_text = "BR: ↑" if sort_by != "bitrate_desc" else "BR: ↓"

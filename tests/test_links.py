@@ -381,6 +381,39 @@ class TestRecognizeFromMessage:
         status.edit_text.assert_awaited_once_with("😔 Ничего не нашлось. Попробуй более длинный фрагмент.")
         assert not os.path.exists(f)
 
+    async def test_found_tracks_become_a_session_with_more(self, db, monkeypatch, tmp_path):
+        from app.db.database import get_db_ctx
+        from app.db.models import TrackInfo
+        from bot.handlers import search
+        from services import spotify, vk_music
+
+        f = tmp_path / "v.ogg"
+        f.write_bytes(b"x")
+        monkeypatch.setattr(r.recognizer, "recognize",
+                            AsyncMock(return_value=RecognizedTrack(title="Believer", artist="Imagine Dragons")))
+        good = TrackInfo(title="Believer", artist="Imagine Dragons", duration=204, source="vk", source_id="g", bitrate=320)
+        other = TrackInfo(title="One", artist="Metallica", duration=446, source="youtube", source_id="o")
+        yt = AsyncMock(return_value=[other])
+        monkeypatch.setattr(r.yt_svc, "search", yt)
+        monkeypatch.setattr(vk_music, "search", AsyncMock(return_value=[good]))
+        monkeypatch.setattr(spotify, "search", AsyncMock(return_value=[]))
+        msg = make_message()
+        msg.bot.send_message.side_effect = [SimpleNamespace(message_id=500, edit_text=AsyncMock()),
+                                            SimpleNamespace(message_id=501)]
+        try:
+            await r._recognize_and_search(msg, str(f))
+            assert yt.await_args.args == ('"Imagine Dragons" "Believer"',)
+            session = search.get_session(42)
+            assert session.tracks == [good] and session.min_score == 0.45   # weak match dropped
+            results = msg.bot.send_message.await_args_list[1].kwargs
+            assert results["text"].startswith("🔍 Результаты 1-1 из 1+")
+            assert any(b.callback_data == "more::0" for row in results["reply_markup"].inline_keyboard for b in row)
+            async with get_db_ctx() as conn:
+                row = await (await conn.execute("SELECT general_msg_ids, original_msg_id FROM search_sessions")).fetchone()
+            assert tuple(row) == ("[500, 501]", 10)
+        finally:
+            search._search_cache.pop(42, None)
+
 
 # ── which texts reach handle_link (real aiogram filters) ───────────────────
 

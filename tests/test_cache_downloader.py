@@ -141,15 +141,25 @@ class TestDownloadTrack:
         assert seen[0][-1].endswith(".tagged.flac")
         assert src.read_bytes() == b"audio"            # failed tagging leaves the original
 
-    async def test_spotify_downloads_via_youtube_search(self, monkeypatch, tmp_path, make_track, no_delay):
-        yt_track = make_track(source="youtube", source_id="yt1")
-        search = AsyncMock(return_value=[yt_track])
+    async def test_spotify_downloads_the_best_youtube_match(self, monkeypatch, tmp_path, make_track, no_delay):
+        video = make_track(source="youtube", source_id="vid", artist="A", title="B (Official Video)", duration=260)
+        audio = make_track(source="youtube", source_id="aud", artist="A", title="B (Audio)", duration=201)
+        live = make_track(source="youtube", source_id="live", artist="A", title="B (Live)", duration=203)
+        search = AsyncMock(return_value=[video, live, audio])
         dl = AsyncMock(return_value=None)
         monkeypatch.setattr(downloader.yt_service, "search", search)
         monkeypatch.setattr(downloader.yt_service, "download", dl)
-        assert await downloader.download_track(make_track(source="spotify", artist="A", title="B")) is None
-        search.assert_awaited_once_with("A B", count=1)
-        dl.assert_awaited_once_with(yt_track, "mp3_320")
+        spotify = make_track(source="spotify", artist="A", title="B", duration=200)
+        assert await downloader.download_track(spotify) is None
+        search.assert_awaited_once_with("A B", count=5)
+        dl.assert_awaited_once_with(audio, "mp3_320")      # studio length, not the video or a live take
+
+    async def test_spotify_without_youtube_hits(self, monkeypatch, make_track, no_delay):
+        monkeypatch.setattr(downloader.yt_service, "search", AsyncMock(return_value=[]))
+        dl = AsyncMock()
+        monkeypatch.setattr(downloader.yt_service, "download", dl)
+        assert await downloader.download_track(make_track(source="spotify")) is None
+        dl.assert_not_called()
 
     async def test_vk_route_adds_to_my_audios_first(self, monkeypatch, make_track, no_delay):
         order = []

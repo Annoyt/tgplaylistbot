@@ -15,15 +15,16 @@ from app.db.database import get_db, get_db_ctx
 from config import settings
 from bot.handlers.search import (
     PER_PAGE,
-    SP_SEARCH_COUNT,
-    VK_SEARCH_COUNT,
-    YT_SEARCH_COUNT,
     _format_results,
     clamp_page,
     filter_lossless,
     get_cached_tracks,
+    get_session,
+    new_search,
     sort_tracks,
 )
+from services.music_search import load_more
+from services.vk_captcha import captcha_manager
 from bot.keyboards.inline import search_results_kb, track_detail_kb
 from bot.signature import with_signature
 from services.cache import generate_track_hash, get_cached_file_id, save_cached_file_id
@@ -62,14 +63,16 @@ async def cb_page(callback: CallbackQuery) -> None:
         await callback.answer("Результаты устарели, выполни поиск снова.")
         return
 
-    # Apply filters
-    filtered = tracks
-    if lossless:
-        filtered = filter_lossless(filtered)
-    if sort_by:
-        filtered = sort_tracks(filtered, sort_by)
+    await _show_results(callback, tracks, _view(tracks, sort_by, lossless), page, sort_by, lossless)
 
-    await _show_results(callback, tracks, filtered, page, sort_by, lossless)
+
+def _view(tracks: list, sort_by: str, lossless: bool) -> list:
+    """The list as the user sees it: Lossless filter, then sort."""
+    if lossless:
+        tracks = filter_lossless(tracks)
+    if sort_by:
+        tracks = sort_tracks(tracks, sort_by)
+    return tracks
 
 
 async def _show_results(
@@ -79,15 +82,23 @@ async def _show_results(
     page: int,
     sort_by: str = "",
     lossless: bool = False,
+    *,
+    answer: bool = True,
+    notice: str = "",
 ) -> None:
     """Render ``view`` (a sorted/filtered ``cached``) at ``page`` in place."""
     page = clamp_page(page, len(view))
+    session = get_session(callback.from_user.id)
+    has_more = bool(session and session.tracks is cached and session.has_more)
     # Maintain artist context for the 'Popular' button
-    artist_name = view[0].artist if view else None
-    text = _format_results(view, page, PER_PAGE, len(view))
+    artist_name = (session.rank_query.artist if session and session.tracks is cached else "") or (
+        view[0].artist if view else None)
+    text = _format_results(view, page, PER_PAGE, len(view), more=has_more)
+    if notice:
+        text = f"{notice}\n\n{text}"
     kb = search_results_kb(view, page, len(view), per_page=PER_PAGE, sort_by=sort_by,
                            lossless_only=lossless, artist_name=artist_name,
-                           index_map=_index_map(cached, view))
+                           index_map=_index_map(cached, view), has_more=has_more)
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except TelegramBadRequest as e:
@@ -95,7 +106,53 @@ async def _show_results(
         # edit, and the exception used to skip answer() — the spinner hung.
         if "message is not modified" not in str(e):
             raise
-    await callback.answer()
+    if answer:
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("more:"))
+async def cb_more(callback: CallbackQuery) -> None:
+    """The "Ещё" button: fetch the next batch and show its first page."""
+    parts = callback.data.split(":")
+    sort_by = parts[1] if len(parts) > 1 else ""
+    lossless = len(parts) > 2 and parts[2] == "1"
+    user_id = callback.from_user.id
+
+    session = get_session(user_id)
+    if not session or not session.tracks:
+        await callback.answer("Результаты устарели, выполни поиск снова.")
+        return
+    if session.loading:
+        await callback.answer("⏳ Уже ищу…")
+        return
+    if not session.has_more:
+        await callback.answer("Больше ничего не нашлось")
+        return
+
+    # Answer now: a batch takes seconds, and a late answer is rejected.
+    await callback.answer("🔎 Ищу ещё…")
+    before = len(session.tracks)
+    session.loading = True
+    try:
+        c_handler = captcha_manager.get_captcha_handler(callback.bot, callback.message.chat.id, user_id)
+        added = await load_more(session, c_handler)
+    except Exception as e:
+        logger.error("Loading more results failed: %s", e)
+        added = 0
+    finally:
+        session.loading = False
+    if get_session(user_id) is not session:
+        return  # a new search replaced these results meanwhile
+
+    view = _view(session.tracks, sort_by, lossless)
+    new_ids = {id(t) for t in session.tracks[before:]}
+    first_new = next((i for i, t in enumerate(view) if id(t) in new_ids), None)
+    if first_new is None:
+        await _show_results(callback, session.tracks, view, clamp_page(10**6, len(view)), sort_by, lossless,
+                            answer=False, notice="😔 Больше ничего не нашлось")
+        return
+    await _show_results(callback, session.tracks, view, first_new // PER_PAGE + 1, sort_by, lossless,
+                        answer=False, notice=f"➕ Добавлено {added}")
 
 
 def _index_map(cached: list, view: list) -> list[int]:
@@ -127,16 +184,12 @@ async def cb_filter(callback: CallbackQuery) -> None:
 
     if filter_type == "br":
         sort_by = value
-        tracks = sort_tracks(tracks, sort_by)
     elif filter_type == "lossless":
         lossless = bool(int(value))
-        if lossless:
-            tracks = filter_lossless(tracks)
     elif filter_type == "title":
         sort_by = "title"
-        tracks = sort_tracks(tracks, "title")
 
-    await _show_results(callback, cached, tracks, page, sort_by, lossless)
+    await _show_results(callback, cached, _view(tracks, sort_by, lossless), page, sort_by, lossless)
 
 
 async def get_audio_duration_ffprobe(file_path: str) -> int:
@@ -444,45 +497,24 @@ async def cb_popular_artist(callback: CallbackQuery) -> None:
     old_text = callback.message.text
     await callback.message.edit_text(f"{escape(old_text or '')}\n\n⏳ <b>Ищу лучшие хиты {escape(artist_name)}...</b>", parse_mode="HTML")
 
-    from services import vk_music as vk_svc
-    from services import youtube as yt_svc
-    from services import spotify as sp_svc
-    import asyncio
-    from app.db.models import TrackInfo
-    from bot.handlers.search import _format_results, _search_cache
-    from services.vk_captcha import captcha_manager
-
     try:
         c_handler = captcha_manager.get_captcha_handler(
-            callback.bot, 
-            callback.message.chat.id, 
+            callback.bot,
+            callback.message.chat.id,
             callback.from_user.id
         )
-        # Search for artist name directly
-        yt_task = yt_svc.search(artist_name, count=YT_SEARCH_COUNT)
-        vk_task = vk_svc.search(artist_name, count=VK_SEARCH_COUNT, captcha_handler=c_handler)
-        sp_task = sp_svc.search(artist_name, count=SP_SEARCH_COUNT)
-
-        results = await asyncio.gather(yt_task, vk_task, sp_task, return_exceptions=True)
-        
-        all_tracks: list[TrackInfo] = []
-        for r in results:
-            if isinstance(r, list):
-                all_tracks.extend(r)
-        
-        if not all_tracks:
-            await callback.message.edit_text(f"😔 Не удалось найти популярные треки {artist_name}")
+        # The artist's songs, most popular first (ranked in artist mode).
+        session = await new_search(user_id, artist_name, artist=artist_name, title="",
+                                   artist_mode=True, captcha_handler=c_handler)
+        tracks = session.tracks
+        if not tracks:
+            await callback.message.edit_text(f"😔 Не удалось найти популярные треки {escape(artist_name)}")
             return
 
-        # Update cache
-        _search_cache[user_id] = all_tracks
-        
-        # Format and update message
-        text = _format_results(all_tracks, 1, 10, len(all_tracks))
-        kb = search_results_kb(all_tracks, 1, len(all_tracks), artist_name=artist_name)
-        
+        text = _format_results(tracks, 1, PER_PAGE, len(tracks), more=session.has_more)
+        kb = search_results_kb(tracks, 1, len(tracks), artist_name=artist_name, has_more=session.has_more)
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        
+
     except Exception as e:
         logger.error(f"Popular search failed: {e}")
         await callback.message.edit_text(f"❌ Ошибка при поиске хитов {artist_name}")

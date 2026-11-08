@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 from app.db.models import TrackInfo
+from services.bitrate_probe import probe_bitrates
 from config import settings
 from services.youtube import AUDIO_TIMEOUT_SEC, BROWSER_UA, NOT_LIVE, _run, ytdlp_error
 
@@ -77,13 +78,13 @@ def _init_vk_audio(creds: dict, captcha_handler=None):
         logger.error(f"VK Audio: CRITICAL INIT ERROR: {e}", exc_info=True)
         return None
 
-async def search(query: str, count: int = 30, captcha_handler=None) -> list[TrackInfo]:
-    """Search VK for audio tracks."""
+async def search(query: str, count: int = 30, captcha_handler=None, offset: int = 0) -> list[TrackInfo]:
+    """Search VK for audio tracks; ``offset`` pages through the results."""
     creds = await _get_vk_creds()
     if not creds.get("token") and not (creds.get("login") and creds.get("password")):
         return []
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         vk_audio = await loop.run_in_executor(None, _init_vk_audio, creds, captcha_handler)
         if vk_audio is None:
@@ -93,8 +94,9 @@ async def search(query: str, count: int = 30, captcha_handler=None) -> list[Trac
             # Use direct API method instead of VkAudio.search which is broken
             # Added sort=2 (by popularity) and autocomplete=1
             res = vk_audio._vk.method("audio.search", {
-                "q": query, 
+                "q": query,
                 "count": count,
+                "offset": offset,
                 "sort": 2,
                 "autocomplete": 1
             })
@@ -102,8 +104,13 @@ async def search(query: str, count: int = 30, captcha_handler=None) -> list[Trac
 
         results = await loop.run_in_executor(None, _direct_search)
 
+        # The API has no quality field (``is_hq`` no longer exists, so every VK
+        # track used to be marked 128k); measure it from the stream instead.
+        # The stream URLs stay here — they are signed and not worth storing.
+        kbps = await probe_bitrates([(item.get("url") or "", int(item.get("duration") or 0)) for item in results])
+
         tracks: list[TrackInfo] = []
-        for item in results:
+        for i, item in enumerate(results):
             tracks.append(
                 TrackInfo(
                     title=item.get("title", "Unknown"),
@@ -111,14 +118,14 @@ async def search(query: str, count: int = 30, captcha_handler=None) -> list[Trac
                     duration=int(item.get("duration", 0)),
                     source="vk",
                     source_id=f"https://vk.com/audio{item.get('owner_id')}_{item.get('id')}",
-                    # Mark HQ (320k) vs standard (128k) so ranking can prefer the
-                    # heavier upload. Don't leave non-HQ at 0 — that made every VK
-                    # track score identically in quality_score.
-                    bitrate=320 if item.get("is_hq") else 128,
+                    bitrate=kbps[i],  # 0 = not measured (probe failed / too slow)
                     filesize=0,
+                    album=(item.get("album") or {}).get("title") or "",
+                    official=bool(item.get("is_official")),
+                    source_rank=offset + i,
                 )
             )
-        logger.info(f"VK search for '{query}' found {len(tracks)} tracks.")
+        logger.info("VK search for '%s' (offset %d) found %d tracks.", query, offset, len(tracks))
         return tracks
     except Exception as e:
         logger.error("VK search failed: %s", e, exc_info=True)
@@ -191,7 +198,7 @@ async def get_playlist_tracks(owner_id: str, playlist_id: str, access_key: str =
                     duration=int(item.get("duration", 0)),
                     source="vk",
                     source_id=f"https://vk.com/audio{item.get('owner_id')}_{item.get('id')}",
-                    bitrate=320 if item.get("is_hq") else 128,
+                    bitrate=0,  # unknown: the API has no quality field (``is_hq`` is gone)
                     filesize=0,
                 )
             )

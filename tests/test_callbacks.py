@@ -32,7 +32,7 @@ def cached(make_track):
         make_track(title="Flac", artist="A", is_lossless=True, source_id="flac"),
         make_track(title="Mid", artist="A", bitrate=192, source_id="mid"),
     ]
-    search._search_cache[42] = tracks
+    search.store_results(42, tracks)
     yield tracks
     search._search_cache.pop(42, None)
 
@@ -92,7 +92,7 @@ class TestSortedViewsSelectTheShownTrack:
 
 class TestSelectTrack:
     async def test_detail_is_html_escaped(self, db, make_track):
-        search._search_cache[42] = [make_track(artist="A&B", title="I <3 you")]
+        search.store_results(42, [make_track(artist="A&B", title="I <3 you")])
         callback, _ = make_callback("select_track:0:1")
         await cb.cb_select_track(callback)
         text = callback.message.edit_text.await_args.args[0]
@@ -167,7 +167,7 @@ class TestDownload:
         callback.message.answer_audio.assert_not_called()
 
     async def test_long_title_answer_is_capped(self, db, patched, make_track):
-        search._search_cache[42] = [make_track(artist="A" * 150, title="T" * 150)]
+        search.store_results(42, [make_track(artist="A" * 150, title="T" * 150)])
         callback, _ = make_callback("dl:0:mp3_320")
         await cb.cb_download(callback)
         assert len(callback.answer.await_args.args[0]) <= 200
@@ -201,7 +201,7 @@ class TestLongResultLists:
     def many(self, make_track):
         tracks = [make_track(title=f"T{i}", artist="A", bitrate=320 if i < 15 else 128, source_id=f"s{i}")
                   for i in range(260)]
-        search._search_cache[42] = tracks
+        search.store_results(42, tracks)
         yield tracks
         search._search_cache.pop(42, None)
 
@@ -229,7 +229,7 @@ class TestLongResultLists:
         callback.answer.assert_awaited_once()
 
     async def test_filter_with_no_matches(self, make_track):
-        search._search_cache[42] = [make_track(bitrate=128)]
+        search.store_results(42, [make_track(bitrate=128)])
         callback, _ = make_callback("filter:lossless:1:1")
         await cb.cb_filter(callback)
         assert callback.message.edit_text.await_args.args[0] == "😔 Под этот фильтр ничего не подходит"
@@ -249,3 +249,142 @@ class TestLongResultLists:
         callback.message.edit_text.side_effect = TelegramBadRequest(method=None, message="Bad Request: message to edit not found")
         with pytest.raises(TelegramBadRequest):
             await cb.cb_page(callback)
+
+
+class TestMoreButton:
+    """"Ещё": the next batch from the sources, appended after what was shown."""
+
+    @pytest.fixture
+    def session(self, make_track):
+        from services.music_search import Cursor
+        from services.ranking import Query
+        tracks = [make_track(title=f"T{i}", artist="A", source="vk", source_id=f"s{i}", bitrate=128) for i in range(50)]
+        sess = search.store_results(42, tracks, query="A", rank_query=Query("A", ""), cursor=Cursor())
+        yield sess
+        search._search_cache.pop(42, None)
+
+    @pytest.fixture
+    def more(self, monkeypatch, make_track):
+        """Patch load_more: appends ``n`` tracks (set via the returned holder)."""
+        holder = SimpleNamespace(n=12, calls=0, bitrate=320)
+
+        async def fake(sess, captcha_handler=None):
+            holder.calls += 1
+            new = [make_track(title=f"N{i}", artist="A", source="vk", source_id=f"n{holder.calls}-{i}",
+                              bitrate=holder.bitrate) for i in range(holder.n)]
+            sess.tracks.extend(new)
+            if holder.n == 0:
+                sess.cursor.exhausted |= set(sess.cursor.sources)
+            return holder.n
+        monkeypatch.setattr(cb, "load_more", fake)
+        return holder
+
+    async def test_appends_and_shows_the_first_new_page(self, session, more):
+        callback, _ = make_callback("more::0")
+        await cb.cb_more(callback)
+        callback.answer.assert_awaited_once_with("🔎 Ищу ещё…")
+        text = callback.message.edit_text.await_args.args[0]
+        assert text.startswith("➕ Добавлено 12\n\n🔍 Результаты 51-60 из 62+")
+        kb = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        assert select_buttons(kb)[0] == "select_track:50:6"
+        assert any(b.callback_data == "more::0" for row in kb.inline_keyboard for b in row)
+
+    async def test_keeps_sort_and_filter(self, session, more):
+        callback, _ = make_callback("more:bitrate_desc:1")
+        await cb.cb_more(callback)
+        text = callback.message.edit_text.await_args.args[0]
+        # lossless filter: only the 12 new 320k tracks qualify → they are page 1
+        assert "🔍 Результаты 1-10 из 12+" in text
+        kb = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        assert any(b.callback_data == "more:bitrate_desc:1" for row in kb.inline_keyboard for b in row)
+
+    async def test_nothing_more_shows_last_page_and_drops_the_button(self, session, more):
+        more.n = 0
+        callback, _ = make_callback("more::0")
+        await cb.cb_more(callback)
+        text = callback.message.edit_text.await_args.args[0]
+        assert text.startswith("😔 Больше ничего не нашлось\n\n🔍 Результаты 41-50 из 50")
+        kb = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        assert not any(b.callback_data.startswith("more:") for row in kb.inline_keyboard for b in row)
+
+    async def test_new_tracks_hidden_by_filter(self, session, more):
+        more.bitrate = 128
+        callback, _ = make_callback("more::1")       # lossless on, nothing qualifies
+        await cb.cb_more(callback)
+        assert callback.message.edit_text.await_args.args[0].startswith("😔 Больше ничего не нашлось")
+
+    async def test_exhausted_session_answers_without_fetching(self, session, more):
+        session.cursor.exhausted |= set(session.cursor.sources)
+        callback, _ = make_callback("more::0")
+        await cb.cb_more(callback)
+        callback.answer.assert_awaited_once_with("Больше ничего не нашлось")
+        assert more.calls == 0
+
+    async def test_double_tap_while_loading(self, session, more):
+        session.loading = True
+        callback, _ = make_callback("more::0")
+        await cb.cb_more(callback)
+        callback.answer.assert_awaited_once_with("⏳ Уже ищу…")
+        assert more.calls == 0
+
+    async def test_expired(self, more):
+        search._search_cache.pop(42, None)
+        callback, _ = make_callback("more::0")
+        await cb.cb_more(callback)
+        callback.answer.assert_awaited_once_with("Результаты устарели, выполни поиск снова.")
+
+    async def test_replaced_by_a_new_search_meanwhile(self, session, monkeypatch, make_track):
+        async def fake(sess, captcha_handler=None):
+            search.store_results(42, [make_track()])     # the user searched again
+            return 3
+        monkeypatch.setattr(cb, "load_more", fake)
+        callback, _ = make_callback("more::0")
+        await cb.cb_more(callback)
+        callback.message.edit_text.assert_not_called()
+        search._search_cache.pop(42, None)
+
+    async def test_failure_is_nothing_more_and_unlocks(self, session, monkeypatch):
+        monkeypatch.setattr(cb, "load_more", AsyncMock(side_effect=RuntimeError("vk down")))
+        callback, _ = make_callback("more::0")
+        await cb.cb_more(callback)
+        assert callback.message.edit_text.await_args.args[0].startswith("😔 Больше ничего не нашлось")
+        assert session.loading is False
+
+    async def test_page_buttons_offer_more_only_for_the_session_list(self, session):
+        callback, _ = make_callback("page:2::0")
+        await cb.cb_page(callback)
+        kb = callback.message.edit_text.await_args.kwargs["reply_markup"]
+        assert any(b.callback_data == "more::0" for row in kb.inline_keyboard for b in row)
+        assert callback.message.edit_text.await_args.args[0].startswith("🔍 Результаты 11-20 из 50+")
+
+
+class TestPopularArtist:
+    async def test_artist_mode_session(self, db, monkeypatch, make_track):
+        from services import music_search as ms
+        monkeypatch.setattr(ms.yt_svc, "search", AsyncMock(return_value=[]))
+        monkeypatch.setattr(ms.sp_svc, "search", AsyncMock(return_value=[]))
+        monkeypatch.setattr(ms.vk_svc, "search", AsyncMock(return_value=[
+            make_track(artist="Кино", title="Кукушка", source="vk", source_id="1", source_rank=5),
+            make_track(artist="Кино", title="Группа крови", source="vk", source_id="2", source_rank=0),
+        ]))
+        callback, _ = make_callback("popular_artist:Кино")
+        try:
+            await cb.cb_popular_artist(callback)
+            sess = search.get_session(42)
+            assert sess.rank_query.artist_mode and sess.query == "Кино"
+            assert [t.title for t in sess.tracks] == ["Группа крови", "Кукушка"]   # VK's most popular first
+            text = callback.message.edit_text.await_args.args[0]
+            assert text.startswith("🔍 Результаты 1-2 из 2+")
+        finally:
+            search._search_cache.pop(42, None)
+
+    async def test_nothing_found(self, db, monkeypatch):
+        from services import music_search as ms
+        for mod in (ms.yt_svc, ms.vk_svc, ms.sp_svc):
+            monkeypatch.setattr(mod, "search", AsyncMock(return_value=[]))
+        callback, _ = make_callback("popular_artist:A&B")
+        try:
+            await cb.cb_popular_artist(callback)
+            assert callback.message.edit_text.await_args.args[0] == "😔 Не удалось найти популярные треки A&amp;B"
+        finally:
+            search._search_cache.pop(42, None)
