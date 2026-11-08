@@ -338,8 +338,6 @@ def text_relevance(track: TrackInfo, query_artist: str, query_title: str) -> flo
         # "artist title" strings made another song of the same artist a near
         # match ("Imagine Dragons Thunder" ~ "Imagine Dragons Believer": 0.93).
         title_sim = max(SequenceMatcher(None, q_title, t_title).ratio(), _token_set_ratio(q_title, t_title))
-        if not t_artist:
-            title_sim = max(title_sim, SequenceMatcher(None, q_title, combined_t).ratio())
         if _contains_words(t_artist, q_artist):
             artist_sim = 1.0
         else:

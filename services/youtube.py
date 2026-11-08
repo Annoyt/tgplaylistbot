@@ -207,9 +207,8 @@ def split_video_title(title: str, uploader: str) -> tuple[str, str]:
     for sep in _TITLE_SEPARATORS:
         if sep not in text:
             continue
+        # text is stripped and separators are space-padded: both sides non-empty
         left, right = (p.strip() for p in text.split(sep, 1))
-        if not left or not right:
-            continue
         ch = _compact(channel)
         if ch and ch in _compact(right) and ch not in _compact(left):
             left, right = right, left  # "Numb (Official Video) – Linkin Park"

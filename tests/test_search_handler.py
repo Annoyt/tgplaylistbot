@@ -105,7 +105,10 @@ class TestSessions:
 
     def test_without_query_there_is_nothing_more(self, make_track):
         try:
-            assert not s.store_results(777, [make_track()]).has_more
+            session = s.store_results(777, [make_track()])
+            assert not session.has_more
+            assert (session.query, session.min_score) == ("", 0.0)
+            assert session.cursor.exhausted == set(ms.SOURCES)
         finally:
             s._search_cache.pop(777, None)
 
@@ -131,6 +134,9 @@ class TestSplitQuery:
         ("Кино Группа крови", ("", "Кино Группа крови")),
         ("- Группа крови", ("", "- Группа крови")),
         ("Jay-Z", ("", "Jay-Z")),
+        ("Кино – Группа крови", ("Кино", "Группа крови")),
+        ("Кино- Группа крови", ("Кино", "Группа крови")),
+        ("A - B - C", ("A", "B - C")),
     ])
     def test_split(self, q, expected):
         assert s.split_query(q) == expected
@@ -230,6 +236,24 @@ class TestTextSearch:
 
 
 class TestNewSearch:
+    async def test_defaults(self, monkeypatch, make_track):
+        m = sources(monkeypatch, yt=[make_track(artist="Zz", title="Song")])
+        try:
+            session = await s.new_search(9, "Song", captcha_handler="H")
+            q = session.rank_query
+            assert (q.artist, q.title, q.artist_mode, session.min_score) == ("", "Song", False, 0.0)
+            assert m["vk"].await_args.kwargs["captcha_handler"] == "H"
+        finally:
+            s._search_cache.pop(9, None)
+
+    async def test_artist_mode_is_passed_through(self, monkeypatch, make_track):
+        sources(monkeypatch, yt=[make_track(artist="Zz", title="Кино")])
+        try:
+            session = await s.new_search(9, "Кино", title="Кино", artist_mode=True)
+            assert session.rank_query.artist_mode
+        finally:
+            s._search_cache.pop(9, None)
+
     async def test_min_score_falls_back_when_nothing_passes(self, monkeypatch, make_track):
         sources(monkeypatch, yt=[make_track(artist="Metallica", title="One")])
         try:

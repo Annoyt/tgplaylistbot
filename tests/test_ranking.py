@@ -595,6 +595,12 @@ class TestExactRelevance:
         # + title containment, + artist containment ("imagine dragons" in the title)
         assert R.text_relevance(t, "Imagine Dragons", "Believer") == pytest.approx(min(1.0, expected + 0.24))
 
+    def test_artist_contained_in_a_longer_name_is_a_full_artist_match(self):
+        t = T(artist="Кино, В. Цой", title="Группа")
+        title_sim = SequenceMatcher(None, "группа крови", "группа").ratio()
+        # artist similarity 1.0 (contained); + artist containment bonus, no title bonus
+        assert R.text_relevance(t, "Кино", "Группа крови") == pytest.approx(title_sim * 1.0 + 0.12)
+
     def test_empty_titles_are_not_a_match(self):
         assert R.text_relevance(T(artist="X", title=""), "Y", "") == 0.0
         assert R.text_relevance(T(artist="Metallica", title="One"), "Queen", "") < 0.5
@@ -742,13 +748,15 @@ class TestExactOrder:
         assert R._order_song([a] + bs, 0)[0].source_id == "a"
 
     def test_official_song_before_equal_other(self):
-        plain = T(artist="B", title="Song", source="vk", bitrate=320)
-        official = T(artist="A", title="Song", source="vk", bitrate=320, official=True)
+        # different artists → different songs; only officialness differs
+        plain = T(artist="Beta", title="Song", source="vk", bitrate=320)
+        official = T(artist="Alpha", title="Song", source="vk", bitrate=320, official=True)
+        assert len(R._group([(plain, 1, 0, 0), (official, 1, 0, 1)])) == 2
         assert R.rank([plain, official], Q("", "Song"))[0] is official
 
     def test_better_quality_song_before_equal_other(self):
-        low = T(artist="B", title="Song", source="vk", bitrate=128)
-        high = T(artist="A", title="Song", source="vk", bitrate=320)
+        low = T(artist="Beta", title="Song", source="vk", bitrate=128)
+        high = T(artist="Alpha", title="Song", source="vk", bitrate=320)
         assert R.rank([low, high], Q("", "Song"))[0] is high
 
     def test_longform_query_does_not_sink_long_items(self):
@@ -787,3 +795,30 @@ class TestExactBestMatch:
         title_off = T(artist="A", title="Song Remastered Edition", duration=200)
         far = T(artist="A", title="Song", duration=300)
         assert R.best_match(ref, [far, title_off]) is title_off
+
+
+class TestExactPatternsAndGroups:
+    def test_tag_pattern_whole_words_longest_first_and_escaped(self):
+        p = R._tag_pattern(("sped up", "sped", "8d", "a+b"))
+        assert R._tags_in("Song (Sped Up) 8D a+b", p) == {"sped up", "8d", "a+b"}
+        assert R._tags_in("speedy 8dd", p) == set()
+
+    def test_regex_pattern_whole_words(self):
+        p = R._regex_pattern((r"концерт\w*", r"8d"))
+        assert R._tags_in("Концертная версия 8D", p) == {"концертная", "8d"}
+        assert R._tags_in("предконцерт 8dd", p) == set()
+
+    def test_exactly_seventy_percent_of_words_groups(self):
+        a = T(artist="Aa", title="bb cc dd ee ff gg hh ii jj")
+        b = T(artist="Aa", title="bb cc dd ee ff gg xx yy zz", source="vk")
+        assert groups([a, b]) == [[a, b]]
+
+    def test_exactly_half_the_title_groups(self):
+        a = T(artist="Земфира", title="Хочешь")
+        b = T(artist="Земфира", title="Хочешь Сейчас", source="vk")
+        assert groups([a, b]) == [[a, b]]
+
+    def test_reference_skips_a_tier_with_unknown_lengths(self):
+        studio = (T(source="vk", official=True, duration=0), 1.0, 0.0, 0)
+        video = (T(uploader="X", official=True, title="Song (Official Video)", duration=200), 1.0, 0.0, 1)
+        assert R._reference_length([studio, video]) == 200
