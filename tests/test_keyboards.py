@@ -71,11 +71,12 @@ class TestSearchResults:
         assert nav[0].text == "◀️" and nav[0].callback_data == "page:1:bitrate_desc:0"
         assert [b.text for b in nav[1:]] == ["1", "·2·", "3"]
 
-    def test_second_nav_row_and_next_arrow_for_many_pages(self, make_track):
+    def test_next_arrow_and_jump_to_last_for_many_pages(self, make_track):
         m = kb.search_results_kb([make_track()] * 100, page=1, total=100)
         rows = m.inline_keyboard
-        assert rows[2][-1].text == "▶️" and rows[2][-1].callback_data == "page:2::0"
-        assert [b.text for b in rows[3]] == ["6", "7", "8", "9", "10"]
+        assert [b.text for b in rows[2]] == ["·1·", "2", "3", "4", "5", "▶️"]
+        assert rows[2][-1].callback_data == "page:2::0"
+        assert [(b.text, b.callback_data) for b in rows[3]] == [("10 ⏭", "page:10::0")]
 
     def test_filter_toggles(self, make_track):
         m = kb.search_results_kb([make_track()], page=1, total=1, sort_by="bitrate_desc", lossless_only=True)
@@ -106,41 +107,35 @@ class TestSearchResults:
 
 
 class TestLongResultPagination:
-    """Past 10 pages the numbers slide with the current page (was fixed 1..10)."""
+    """Five page numbers that slide with the current page, plus end jumps."""
 
     @staticmethod
-    def nav(make_track, page, pages):
-        m = kb.search_results_kb([make_track()] * (pages * 10), page=page, total=pages * 10)
+    def nav(make_track, page, pages, **kw):
+        m = kb.search_results_kb([make_track()] * (pages * 10), page=page, total=pages * 10, **kw)
         rows = snapshot(m)[2:-1]                      # between selects and filters
         return [[text for text, _ in row] for row in rows], rows
 
     def test_first_page_of_26(self, make_track):
         texts, rows = self.nav(make_track, 1, 26)
-        assert texts == [["·1·", "2", "3", "4", "5", "▶️"], ["6", "7", "8", "9", "10"], ["26 ⏭"]]
-        assert rows[2][0][1] == "page:26::0"
+        assert texts == [["·1·", "2", "3", "4", "5", "▶️"], ["26 ⏭"]]
+        assert rows[1][0][1] == "page:26::0"
 
-    def test_middle_page_keeps_current_in_view(self, make_track):
+    def test_middle_page_keeps_current_centred(self, make_track):
         texts, rows = self.nav(make_track, 13, 26)
-        assert texts == [
-            ["◀️", "9", "10", "11", "12", "·13·", "▶️"],
-            ["14", "15", "16", "17", "18"],
-            ["⏮ 1", "26 ⏭"],
-        ]
+        assert texts == [["◀️", "11", "12", "·13·", "14", "15", "▶️"], ["⏮ 1", "26 ⏭"]]
         assert rows[0][0][1] == "page:12::0" and rows[0][-1][1] == "page:14::0"
-        assert rows[2][0][1] == "page:1::0"
+        assert rows[1][0][1] == "page:1::0"
 
     def test_last_page_window_ends_at_last(self, make_track):
         texts, _ = self.nav(make_track, 26, 26)
-        assert texts == [["◀️", "17", "18", "19", "20", "21"], ["22", "23", "24", "25", "·26·"], ["⏮ 1"]]
+        assert texts == [["◀️", "22", "23", "24", "25", "·26·"], ["⏮ 1"]]
 
-    def test_eleven_pages(self, make_track):
-        assert self.nav(make_track, 1, 11)[0][-1] == ["11 ⏭"]
-        texts, _ = self.nav(make_track, 6, 11)
-        assert texts == [["◀️", "2", "3", "4", "5", "·6·", "▶️"], ["7", "8", "9", "10", "11"], ["⏮ 1"]]
+    def test_six_pages(self, make_track):
+        assert self.nav(make_track, 1, 6)[0] == [["·1·", "2", "3", "4", "5", "▶️"], ["6 ⏭"]]
+        assert self.nav(make_track, 4, 6)[0] == [["◀️", "2", "3", "·4·", "5", "6", "▶️"], ["⏮ 1"]]
 
-    def test_ten_pages_need_no_jumps(self, make_track):
-        texts, _ = self.nav(make_track, 7, 10)
-        assert texts == [["◀️", "1", "2", "3", "4", "5", "▶️"], ["6", "·7·", "8", "9", "10"]]
+    def test_five_pages_need_no_arrows_or_jumps(self, make_track):
+        assert self.nav(make_track, 3, 5)[0] == [["◀️", "1", "2", "·3·", "4", "5"]]
 
     def test_every_page_of_a_long_list_is_reachable_and_marked(self, make_track):
         pages = 30
@@ -152,8 +147,26 @@ class TestLongResultPagination:
 
     def test_three_digit_pages_fit_callback_limit(self, make_track):
         m = kb.search_results_kb([make_track()] * 1500, page=120, total=1500, sort_by="bitrate_desc",
-                                 lossless_only=True, artist_name="Очень Длинное Имя Исполнителя Из Кириллицы")
+                                 lossless_only=True, artist_name="Очень Длинное Имя Исполнителя Из Кириллицы",
+                                 has_more=True)
         assert_within_limit(m)
+
+
+class TestMoreButton:
+    def test_shown_with_current_view_state(self, make_track):
+        m = kb.search_results_kb([make_track()] * 50, page=5, total=50, sort_by="bitrate_desc",
+                                 lossless_only=True, has_more=True)
+        rows = snapshot(m)
+        assert rows[3] == [("🔎 Ещё результаты", "more:bitrate_desc:1")]
+        assert rows[4][0][0].startswith("BR")
+
+    def test_hidden_by_default(self, make_track):
+        m = kb.search_results_kb([make_track()] * 50, page=1, total=50)
+        assert not [d for d in all_callback_data(m) if d.startswith("more:")]
+
+    def test_on_a_single_page(self, make_track):
+        rows = snapshot(kb.search_results_kb([make_track()], page=1, total=1, has_more=True))
+        assert rows[1:3] == [[("·1·", "page:1::0")], [("🔎 Ещё результаты", "more::0")]]
 
 
 class TestOtherKeyboards:
@@ -263,10 +276,10 @@ class TestSnapshots:
 
     def test_search_results_last_of_many_pages(self, make_track):
         m = kb.search_results_kb([make_track()] * 100, page=10, total=100, sort_by="title")
-        nav1, nav2 = m.inline_keyboard[2], m.inline_keyboard[3]
-        assert [b.text for b in nav1] == ["◀️", "1", "2", "3", "4", "5"]          # no ▶️ on the last page
+        nav1, jumps = m.inline_keyboard[2], m.inline_keyboard[3]
+        assert [b.text for b in nav1] == ["◀️", "6", "7", "8", "9", "·10·"]          # no ▶️ on the last page
         assert nav1[0].callback_data == "page:9:title:0"
-        assert [b.text for b in nav2] == ["6", "7", "8", "9", "·10·"]
+        assert [(b.text, b.callback_data) for b in jumps] == [("⏮ 1", "page:1:title:0")]
 
     def test_search_results_exactly_five_pages_has_one_row_and_no_arrow(self, make_track):
         m = kb.search_results_kb([make_track()] * 50, page=1, total=50)
@@ -290,4 +303,4 @@ class TestPageCountBoundaries:
     def test_six_pages_show_next_arrow(self, make_track):
         m = kb.search_results_kb([make_track()] * 60, page=1, total=60)
         assert [b.text for b in m.inline_keyboard[2]] == ["·1·", "2", "3", "4", "5", "▶️"]
-        assert [b.text for b in m.inline_keyboard[3]] == ["6"]
+        assert [b.text for b in m.inline_keyboard[3]] == ["6 ⏭"]

@@ -62,14 +62,24 @@ class TestCreds:
 
 
 class TestSearch:
-    async def test_maps_items_and_hq_bitrate(self, db, fake_vk):
-        fake_vk.api = FakeVk({"audio.search": {"items": ITEMS}})
-        tracks = await vk.search("believer", count=5)
-        assert fake_vk.api.calls == [("audio.search", {"q": "believer", "count": 5, "sort": 2, "autocomplete": 1})]
+    async def test_maps_items_and_measured_bitrate(self, db, fake_vk, monkeypatch):
+        items = [dict(ITEMS[0], url="https://cdn/a/index.m3u8", is_official=True, album={"title": "Evolve"}),
+                 ITEMS[1]]
+        probe = AsyncMock(return_value=[320, 0])
+        monkeypatch.setattr(vk, "probe_bitrates", probe)
+        fake_vk.api = FakeVk({"audio.search": {"items": items}})
+        tracks = await vk.search("believer", count=5, offset=10)
+        assert fake_vk.api.calls == [("audio.search", {"q": "believer", "count": 5, "offset": 10, "sort": 2, "autocomplete": 1})]
+        probe.assert_awaited_once_with([("https://cdn/a/index.m3u8", 204), ("", 180)])
         a, b = tracks
         assert (a.title, a.artist, a.duration, a.source, a.source_id, a.bitrate) == \
             ("Believer", "Imagine Dragons", 204, "vk", "https://vk.com/audio-1_5", 320)
-        assert (b.duration, b.bitrate, b.source_id) == (180, 128, "https://vk.com/audio7_9")
+        assert (a.official, a.album, a.source_rank) == (True, "Evolve", 10)
+        # unmeasured stays 0 (it used to claim 128k for every track without is_hq)
+        assert (b.duration, b.bitrate, b.source_id, b.official, b.album, b.source_rank) == \
+            (180, 0, "https://vk.com/audio7_9", False, "", 11)
+        # the signed stream URL is not kept anywhere on the track
+        assert "cdn/a" not in repr(a)
 
     async def test_no_credentials(self, db, monkeypatch):
         monkeypatch.setattr(vk.settings, "vk_token", "")

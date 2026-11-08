@@ -29,8 +29,13 @@ def _get_sp() -> spotipy.Spotify | None:
         return None
 
 
-async def search(query: str, count: int = 30) -> list[TrackInfo]:
-    """Search Spotify for track metadata."""
+# Since February 2026 GET /search caps ``limit`` at 10 (was 50) for apps in
+# development mode; a larger value is rejected, so every search failed.
+SEARCH_MAX_LIMIT = 10
+
+
+async def search(query: str, count: int = SEARCH_MAX_LIMIT, offset: int = 0) -> list[TrackInfo]:
+    """Search Spotify for track metadata; ``offset`` pages through the results."""
     sp = _get_sp()
     if sp is None:
         return []
@@ -39,13 +44,15 @@ async def search(query: str, count: int = 30) -> list[TrackInfo]:
         import asyncio
 
         results = await asyncio.wait_for(
-            asyncio.to_thread(sp.search, q=query, limit=min(count, 50), type="track"),
+            asyncio.to_thread(
+                sp.search, q=query, limit=max(1, min(count, SEARCH_MAX_LIMIT)), offset=offset, type="track",
+            ),
             timeout=15,
         )
         items = results.get("tracks", {}).get("items", [])
 
         tracks: list[TrackInfo] = []
-        for item in items:
+        for i, item in enumerate(items):
             duration_ms = item.get("duration_ms", 0)
             artists = ", ".join(a["name"] for a in item.get("artists", []))
             album = item.get("album", {}).get("name", "")
@@ -65,6 +72,9 @@ async def search(query: str, count: int = 30) -> list[TrackInfo]:
                     filesize=0,
                     thumbnail_url=cover,
                     album=album,
+                    # Label releases: their length is the studio reference.
+                    official=True,
+                    source_rank=offset + i,
                 )
             )
         return tracks

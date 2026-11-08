@@ -41,6 +41,11 @@ class TrackInfo:
     is_lossless: bool = False
     thumbnail_url: str = ""
     album: str = ""
+    # Ranking signals (defaults keep old serialized tracks loadable):
+    uploader: str = ""      # YouTube channel; ``artist`` is parsed from the video title
+    views: int = 0          # YouTube view count
+    official: bool = False  # label/artist upload: VK is_official, artist channel, Spotify
+    source_rank: int = -1   # position in the source's own result list (-1 = unknown)
 
     @property
     def duration_str(self) -> str:

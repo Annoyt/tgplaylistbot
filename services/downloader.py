@@ -11,6 +11,7 @@ from app.db.models import TrackInfo
 from config import settings
 from services import youtube as yt_service
 from services import vk_music as vk_service
+from services.ranking import best_match
 from services.vk_captcha import captcha_manager
 from bot.handlers.admin import get_global_settings
 
@@ -57,10 +58,13 @@ async def download_track(
         await vk_service.add_track_to_my_audios(track, captcha_handler=c_handler)
         file_path = await vk_service.download(track, quality, captcha_handler=c_handler)
     elif track.source == "spotify":
+        # Spotify only has metadata. Of a few YouTube hits take the same
+        # version at the studio length (the first hit is often the music video
+        # with an intro, or a lyric re-upload).
         query = f"{track.artist} {track.title}"
-        yt_results = await yt_service.search(query, count=1)
-        if yt_results:
-            file_path = await yt_service.download(yt_results[0], quality)
+        match = best_match(track, await yt_service.search(query, count=5))
+        if match:
+            file_path = await yt_service.download(match, quality)
 
     if not file_path:
         logger.warning(f"Download failed for {track.source}: {track.title}")

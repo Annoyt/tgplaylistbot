@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import sys
@@ -173,41 +174,114 @@ async def _update_ytdlp() -> tuple[str, str] | None:
     return old, new
 
 
-async def search(query: str, count: int = 30) -> list[TrackInfo]:
-    """Search YouTube for audio tracks."""
+_TITLE_SEPARATORS = (" - ", " – ", " — ", " || ", " | ", " // ")
+_TRACK_NUMBER_RE = re.compile(r"^\s*\d{1,3}\s*[.)]\s+")
+_UPLOADER_NOISE_RE = re.compile(r"(?:\s*-\s*topic|vevo|\s+official(?:\s+channel)?)\s*$", re.IGNORECASE)
+_QUOTED_TITLE_RE = re.compile(r'^([^:"«“]+):\s*["«“](.+?)["»”](.*)$')
+_QUOTES = "\"'«»“”„ "
+
+
+def _compact(s: str) -> str:
+    return re.sub(r"\W", "", s.lower())
+
+
+def clean_uploader(uploader: str) -> str:
+    """Channel name without " - Topic" / "VEVO" / " Official" decorations."""
+    prev = None
+    name = uploader.strip()
+    while prev != name:
+        prev, name = name, _UPLOADER_NOISE_RE.sub("", name).strip()
+    return name
+
+
+def split_video_title(title: str, uploader: str) -> tuple[str, str]:
+    """(artist, title) of a YouTube video.
+
+    Video titles are mostly "Artist - Title (extras)" while the uploader is a
+    channel name; taking the channel as the artist made every re-upload look
+    like a different song by "7clouds", and the full title hid the song name
+    ("Believer" never matched "Imagine Dragons - Believer (Official Video)").
+    """
+    text = _TRACK_NUMBER_RE.sub("", title).strip()
+    channel = clean_uploader(uploader)
+    for sep in _TITLE_SEPARATORS:
+        if sep not in text:
+            continue
+        # text is stripped and separators are space-padded: both sides non-empty
+        left, right = (p.strip() for p in text.split(sep, 1))
+        ch = _compact(channel)
+        if ch and ch in _compact(right) and ch not in _compact(left):
+            left, right = right, left  # "Numb (Official Video) – Linkin Park"
+        return left.strip(_QUOTES), right.strip(_QUOTES)
+    m = _QUOTED_TITLE_RE.match(text)  # The Weeknd: "Blinding Lights"
+    if m:
+        return m.group(1).strip(), (m.group(2) + m.group(3)).strip()
+    return channel or uploader, text
+
+
+def is_official_upload(uploader: str, artist: str, title: str, verified: bool) -> bool:
+    """Artist's own channel, an auto-generated "- Topic" channel, or VEVO."""
+    up = uploader.lower().strip()
+    if up.endswith("topic") or up.endswith("vevo"):
+        return True
+    if not verified:
+        return False
+    ch, art = _compact(clean_uploader(uploader)), _compact(artist)
+    if len(ch) >= 3 and len(art) >= 3 and (ch in art or art in ch):
+        return True
+    # A verified channel under another spelling ("Zemfira" for "Земфира").
+    low = title.lower()
+    return "official" in low and "unofficial" not in low
+
+
+async def search(query: str, count: int = 20, offset: int = 0) -> list[TrackInfo]:
+    """Search YouTube for audio tracks; ``offset`` pages through the results.
+
+    YouTube serves search results ~20 per request, so 20 is the cheapest batch.
+    """
     cmd = [
         "yt-dlp",
-        f"ytsearch{count}:{query}",
+        f"ytsearch{offset + count}:{query}",
         "--dump-json",
         "--flat-playlist",
         "--no-download",
         "--quiet",
     ]
+    if offset:
+        cmd += ["-I", f"{offset + 1}:{offset + count}"]
     _, stdout, _ = await _run(*cmd, timeout=60)
 
     tracks: list[TrackInfo] = []
-    for line in stdout.decode().strip().split("\n"):
+    for i, line in enumerate(stdout.decode().strip().split("\n")):
         if not line:
             continue
         try:
             data = json.loads(line)
-            duration = int(data.get("duration") or 0)
-            tracks.append(
-                TrackInfo(
-                    title=data.get("title", "Unknown"),
-                    artist=data.get("uploader", data.get("channel", "Unknown")),
-                    duration=duration,
-                    source="youtube",
-                    source_id=data.get("id", data.get("url", "")),
-                    # We download the best audio (opus format 251, ~160k). Show
-                    # that as a realistic estimate — flat-playlist search carries
-                    # no per-track bitrate, and probing each is slow/rate-limited.
-                    bitrate=160,
-                    filesize=0,
-                )
-            )
-        except (json.JSONDecodeError, KeyError):
+        except json.JSONDecodeError:
             continue
+        if data.get("live_status") in ("is_live", "is_upcoming"):
+            continue  # a stream can't be downloaded (see NOT_LIVE)
+        uploader = data.get("uploader") or data.get("channel") or ""
+        raw_title = data.get("title") or "Unknown"
+        artist, title = split_video_title(raw_title, uploader)
+        tracks.append(
+            TrackInfo(
+                title=title,
+                artist=artist or "Unknown",
+                duration=int(data.get("duration") or 0),
+                source="youtube",
+                source_id=data.get("id") or data.get("url") or "",
+                # We download the best audio (opus format 251, ~160k). Show
+                # that as a realistic estimate — flat-playlist search carries
+                # no per-track bitrate, and probing each is slow/rate-limited.
+                bitrate=160,
+                filesize=0,
+                uploader=uploader,
+                views=int(data.get("view_count") or 0),
+                official=is_official_upload(uploader, artist, raw_title, bool(data.get("channel_is_verified"))),
+                source_rank=offset + i,
+            )
+        )
     return tracks
 
 

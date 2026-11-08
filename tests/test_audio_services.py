@@ -259,6 +259,20 @@ class TestSpotify:
         assert (t.title, t.artist, t.duration, t.source, t.source_id, t.album, t.thumbnail_url) == \
             ("Believer", "Imagine Dragons, X", 204, "spotify", "sp1", "Evolve", "http://img")
 
+    async def test_search_limit_capped_at_ten_and_paged(self, monkeypatch):
+        calls = []
+        item = {"name": "T", "duration_ms": 1000, "id": "i", "artists": [], "album": {}}
+
+        def search(**kw):
+            calls.append(kw)
+            return {"tracks": {"items": [item, item]}}
+        monkeypatch.setattr(sp, "_get_sp", lambda: SimpleNamespace(search=search))
+        a, b = await sp.search("q", count=50, offset=20)
+        assert calls == [{"q": "q", "limit": 10, "offset": 20, "type": "track"}]
+        assert (a.official, a.source_rank, b.source_rank) == (True, 20, 21)
+        await sp.search("q", count=0)
+        assert calls[-1]["limit"] == 1 and calls[-1]["offset"] == 0
+
     async def test_search_error_returns_empty(self, monkeypatch):
         def boom(**kw):
             raise RuntimeError("429")

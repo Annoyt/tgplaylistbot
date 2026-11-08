@@ -92,13 +92,103 @@ class TestSearch:
         tracks = await yt.search("believer", count=5)
         assert spawned.calls[0][:2] == ["yt-dlp", "ytsearch5:believer"]
         assert [t.title for t in tracks] == ["Believer", "No uploader"]
-        assert tracks[0].artist == "ImagineDragonsVEVO" and tracks[0].duration == 204
+        # no "Artist - Title" in the video title: the channel, minus "VEVO", is the artist
+        assert tracks[0].artist == "ImagineDragons" and tracks[0].uploader == "ImagineDragonsVEVO"
+        assert tracks[0].duration == 204 and tracks[0].official and tracks[0].source_rank == 0
         assert tracks[0].source == "youtube" and tracks[0].source_id == "abc" and tracks[0].bitrate == 160
         assert tracks[1].artist == "Chan" and tracks[1].duration == 0 and tracks[1].source_id == "u2"
 
     async def test_empty_output(self, spawned):
         spawned.factory = lambda a: FakeProc(out=b"")
         assert await yt.search("x") == []
+
+    async def test_offset_selects_the_next_page(self, spawned):
+        spawned.factory = lambda a: FakeProc(out=b'{"id": "a", "title": "A - B"}\n{"id": "b", "title": "C - D"}\n')
+        a, b = await yt.search("q", count=20, offset=40)
+        assert spawned.calls[0] == ["yt-dlp", "ytsearch60:q", "--dump-json", "--flat-playlist", "--no-download",
+                                    "--quiet", "-I", "41:60"]
+        assert (a.source_rank, b.source_rank) == (40, 41)
+
+    async def test_default_batch_is_twenty(self, spawned):
+        spawned.factory = lambda a: FakeProc(out=b"")
+        await yt.search("q")
+        assert spawned.calls[0][1] == "ytsearch20:q"
+
+    async def test_blank_and_broken_lines_in_the_middle_are_skipped(self, spawned):
+        spawned.factory = lambda a: FakeProc(out=b'{"id": "a"}\n\nnot json\n{"id": "b"}\n')
+        assert [t.source_id for t in await yt.search("q")] == ["a", "b"]
+
+    async def test_missing_fields_defaults(self, spawned):
+        spawned.factory = lambda a: FakeProc(out=b'{"title": "x"}\n')
+        (t,) = await yt.search("q")
+        assert (t.source_id, t.views, t.official, t.uploader) == ("", 0, False, "")
+
+    async def test_verified_artist_channel_is_official(self, spawned):
+        lines = [{"id": "a", "title": "Believer", "uploader": "ImagineDragons", "channel_is_verified": True},
+                 {"id": "b", "title": "Believer", "uploader": "ImagineDragons"}]
+        spawned.factory = lambda a: FakeProc(out="\n".join(json.dumps(x) for x in lines).encode())
+        a, b = await yt.search("q")
+        assert (a.official, b.official) == (True, False)
+
+    async def test_signals_and_parsed_artist(self, spawned):
+        line = {"id": "v", "title": "Imagine Dragons - Believer (Lyrics)", "uploader": "7clouds",
+                "view_count": 730_000_000, "channel_is_verified": True, "duration": 205}
+        spawned.factory = lambda a: FakeProc(out=json.dumps(line).encode())
+        (t,) = await yt.search("q")
+        assert (t.artist, t.title, t.uploader, t.views, t.official) == \
+            ("Imagine Dragons", "Believer (Lyrics)", "7clouds", 730_000_000, False)
+
+    async def test_live_streams_skipped(self, spawned):
+        lines = [{"id": "live", "title": "Radio 24/7", "live_status": "is_live"},
+                 {"id": "soon", "title": "Premiere", "live_status": "is_upcoming"},
+                 {"id": "ok", "title": "Song", "live_status": "was_live"}]
+        spawned.factory = lambda a: FakeProc(out="\n".join(json.dumps(x) for x in lines).encode())
+        assert [t.source_id for t in await yt.search("q")] == ["ok"]
+
+
+class TestVideoTitle:
+    @pytest.mark.parametrize("title,uploader,expected", [
+        ("Imagine Dragons - Believer (Official Video)", "ImagineDragonsVEVO", ("Imagine Dragons", "Believer (Official Video)")),
+        ("Земфира — Хочешь? (Official Video)", "Zemfira", ("Земфира", "Хочешь? (Official Video)")),
+        ("КИНО || ГРУППА КРОВИ", "mrPhakel", ("КИНО", "ГРУППА КРОВИ")),
+        ("Numb (Official Music Video) [4K UPGRADE] – Linkin Park", "Linkin Park", ("Linkin Park", "Numb (Official Music Video) [4K UPGRADE]")),
+        ("12.  Кино - Группа крови (концерт)", "Георгий", ("Кино", "Группа крови (концерт)")),
+        ('The Weeknd: "Blinding Lights"', "The Late Show", ("The Weeknd", "Blinding Lights")),
+        ("Группа крови", "Группа КИНО", ("Группа КИНО", "Группа крови")),
+        ("Сломанный Воздух", "Сломанный воздух - Topic", ("Сломанный воздух", "Сломанный Воздух")),
+        ("Sonne", "Rammstein Official", ("Rammstein", "Sonne")),
+        ("Song", "", ("", "Song")),
+        ("Jay-Z - 99 Problems", "JayZVEVO", ("Jay-Z", "99 Problems")),
+        (" - Title", "Chan", ("Chan", "- Title")),
+        ('"Quoted" - "Name"', "x", ("Quoted", "Name")),
+        ("A - B - C", "x", ("A", "B - C")),
+    ])
+    def test_split(self, title, uploader, expected):
+        assert yt.split_video_title(title, uploader) == expected
+
+    @pytest.mark.parametrize("uploader,expected", [
+        ("ImagineDragonsVEVO", "ImagineDragons"), ("Queen - Topic", "Queen"), ("Queen Official", "Queen"),
+        ("Rammstein Official Channel", "Rammstein"), ("Muse", "Muse"), ("X - Topic VEVO", "X"),
+    ])
+    def test_clean_uploader(self, uploader, expected):
+        assert yt.clean_uploader(uploader) == expected
+
+    @pytest.mark.parametrize("uploader,artist,title,verified,expected", [
+        ("Queen - Topic", "Queen", "Bohemian Rhapsody", False, True),
+        ("ImagineDragonsVEVO", "Imagine Dragons", "Believer", False, True),
+        ("ImagineDragons", "Imagine Dragons", "Believer", True, True),
+        ("ImagineDragons", "Imagine Dragons", "Believer", False, False),
+        ("Rammstein Official", "Rammstein", "Sonne", True, True),
+        ("Zemfira", "Земфира", "Земфира — Хочешь? (Official Video)", True, True),
+        ("Zemfira", "Земфира", "Земфира — Хочешь? (Unofficial Video)", True, False),
+        ("7clouds", "Imagine Dragons", "Believer (Lyrics)", True, False),
+        ("AB", "AB", "x", True, False),                      # too short to compare names
+        ("Abc", "Abc", "x", True, True),                     # exactly 3 letters is enough
+        ("Rammstein", "Rammstein feat. Heppner", "x", True, True),   # channel inside the artist
+        ("Группа КИНО", "Кино", "x", True, True),               # artist inside the channel name
+    ])
+    def test_official_upload(self, uploader, artist, title, verified, expected):
+        assert yt.is_official_upload(uploader, artist, title, verified) is expected
 
 
 # ── downloads ──────────────────────────────────────────────────────────────

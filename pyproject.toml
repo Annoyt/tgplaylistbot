@@ -37,6 +37,9 @@ source_paths = ["app", "bot", "services", "config.py", "run.py"]
 also_copy = ["tests", "pyproject.toml"]
 only_mutate = [
     "bot/handlers/search.py",
+    "services/ranking.py",
+    "services/music_search.py",
+    "services/bitrate_probe.py",
     "bot/keyboards/inline.py",
     "bot/signature.py",
     "services/youtube.py",

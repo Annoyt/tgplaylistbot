@@ -2,39 +2,87 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from html import escape
 import re
 from collections import OrderedDict
-from difflib import SequenceMatcher
+from html import escape
 
 from aiogram import F, Router
 from aiogram.types import Message
 
 from app.db.models import TrackInfo
 from bot.keyboards.inline import search_results_kb
-from services import spotify as sp_svc
-from services import vk_music as vk_svc
-from services import youtube as yt_svc
+from services.music_search import SOURCES, Cursor, SearchSession, fetch_batch
+from services.ranking import Query, analyze_query, is_official, rank
 from services.vk_captcha import captcha_manager
 
 router = Router()
 logger = logging.getLogger(__name__)
 
-# In-memory cache for search results per user (user_id -> list[TrackInfo])
+# Per-user search sessions (user_id -> SearchSession), oldest evicted first.
 _MAX_CACHE = 500
-_search_cache: OrderedDict[int, list[TrackInfo]] = OrderedDict()
-
-# Results requested per source. 30 each capped the list at 60 (Spotify isn't
-# configured on prod) although VK and YouTube have far more matches. Measured on
-# prod 2026-11-07, sources run in parallel: VK 200 in ~2.9 s (one API call, max
-# 300), YouTube 60 in ~3.2 s (100 took 6.3 s, 30 took 2.5 s).
-YT_SEARCH_COUNT = 60
-VK_SEARCH_COUNT = 200
-SP_SEARCH_COUNT = 50  # Spotify's per-request maximum
+_search_cache: OrderedDict[int, SearchSession] = OrderedDict()
 
 PER_PAGE = 10
+
+
+def store_results(
+    user_id: int,
+    tracks: list[TrackInfo],
+    *,
+    query: str = "",
+    rank_query: Query | None = None,
+    cursor: Cursor | None = None,
+    min_score: float = 0.0,
+) -> SearchSession:
+    """Make ``tracks`` the user's current results. With ``query`` and
+    ``cursor`` the "Ещё" button can fetch more of them."""
+    session = SearchSession(
+        query=query,
+        rank_query=rank_query or Query(),
+        tracks=list(tracks),
+        cursor=cursor or Cursor(exhausted=set(SOURCES)),
+        min_score=min_score,
+    )
+    _search_cache[user_id] = session
+    _search_cache.move_to_end(user_id)
+    while len(_search_cache) > _MAX_CACHE:
+        _search_cache.popitem(last=False)
+    return session
+
+
+def get_session(user_id: int) -> SearchSession | None:
+    return _search_cache.get(user_id)
+
+
+def get_cached_tracks(user_id: int) -> list[TrackInfo]:
+    """Get cached search results for a user."""
+    session = _search_cache.get(user_id)
+    return session.tracks if session else []
+
+
+async def new_search(
+    user_id: int,
+    query: str,
+    *,
+    artist: str = "",
+    title: str | None = None,
+    artist_mode: bool = False,
+    captcha_handler=None,
+    sources: tuple[str, ...] = SOURCES,
+    min_score: float = 0.0,
+) -> SearchSession:
+    """First batch for ``query``, ranked for ``artist``/``title`` (default:
+    the query itself), stored as the user's session."""
+    cursor = Cursor(sources=sources)
+    batch = await fetch_batch(query, cursor, captcha_handler)
+    rank_query = analyze_query(artist, query if title is None else title, batch, artist_mode=artist_mode)
+    ranked = rank(batch, rank_query, min_score)
+    if min_score and not ranked:
+        # The threshold filtered everything: keep a best-effort ranking.
+        min_score = 0.0
+        ranked = rank(batch, rank_query)
+    return store_results(user_id, ranked, query=query, rank_query=rank_query, cursor=cursor, min_score=min_score)
 
 
 def clamp_page(page: int, total: int, per_page: int = PER_PAGE) -> int:
@@ -47,12 +95,13 @@ def clamp_page(page: int, total: int, per_page: int = PER_PAGE) -> int:
     return min(max(1, page), last)
 
 
-def _format_results(tracks: list[TrackInfo], page: int, per_page: int, total: int) -> str:
-    """Format search results as numbered list."""
+def _format_results(tracks: list[TrackInfo], page: int, per_page: int, total: int, more: bool = False) -> str:
+    """Format search results as numbered list (``more``: the source has more)."""
     if total == 0:
         return "😔 Под этот фильтр ничего не подходит"
     start = (page - 1) * per_page
-    lines = [f"🔍 Результаты {start+1}-{min(start+per_page, total)} из {total}\n"]
+    plus = "+" if more else ""
+    lines = [f"🔍 Результаты {start+1}-{min(start+per_page, total)} из {total}{plus}\n"]
 
     for i, t in enumerate(tracks[start:start+per_page], start=start+1):
         badge = " ✅" if _is_official(t) else ""
@@ -67,11 +116,19 @@ def _format_results(tracks: list[TrackInfo], page: int, per_page: int, total: in
     return "\n".join(lines)
 
 
+def split_query(query: str) -> tuple[str, str]:
+    """Split "Artist - Title" into (artist, title); otherwise ("", query)."""
+    for sep in (" — ", " – ", " - ", " -", "- "):
+        if sep in query:
+            left, _, right = query.partition(sep)
+            if left.strip() and right.strip():
+                return left.strip(), right.strip()
+    return "", query
+
+
 @router.message(F.text & ~F.text.startswith("/") & ~F.text.startswith("http"))
 async def text_search(message: Message) -> None:
     """Handle text search queries."""
-
-
     query = message.text.strip()
     if not query or len(query) < 2:
         return
@@ -92,79 +149,43 @@ async def text_search(message: Message) -> None:
     )
 
     try:
-        # Parallel search
         c_handler = captcha_manager.get_captcha_handler(
-            message.bot, 
-            message.chat.id, 
+            message.bot,
+            message.chat.id,
             message.from_user.id
         )
-        yt_task = yt_svc.search(query, count=YT_SEARCH_COUNT)
-        vk_task = vk_svc.search(query, count=VK_SEARCH_COUNT, captcha_handler=c_handler)
-        sp_task = sp_svc.search(query, count=SP_SEARCH_COUNT)
-
-        results = await asyncio.gather(yt_task, vk_task, sp_task, return_exceptions=True)
-
-        yt_res = results[0] if isinstance(results[0], list) else []
-        vk_res = results[1] if isinstance(results[1], list) else []
-        sp_res = results[2] if isinstance(results[2], list) else []
-
-        platform_res = {
-            "youtube": yt_res,
-            "vk": vk_res,
-            "spotify": sp_res
-        }
 
         from app.db.database import get_db
         db = await get_db()
         try:
             row = await db.execute("SELECT platform_priority FROM user_settings WHERE user_id = ?", (message.from_user.id,))
             data = await row.fetchone()
-            platforms = [p.strip() for p in data["platform_priority"].split(",")] if data else ["youtube", "vk", "spotify"]
+            platforms = [p.strip() for p in data["platform_priority"].split(",")] if data else list(SOURCES)
         finally:
             await db.close()
+        # Priority order breaks ranking ties; sources missing from it still run.
+        sources = tuple(dict.fromkeys([p for p in platforms if p in SOURCES] + list(SOURCES)))
 
-        all_tracks: list[TrackInfo] = []
-        for p in platforms:
-            all_tracks.extend(platform_res.get(p, []))
-
-        for r in results:
-            if isinstance(r, Exception):
-                logger.warning("Search error: %s", r)
-
-        if not all_tracks:
+        q_artist, q_title = split_query(query)
+        session = await new_search(
+            message.from_user.id, query, artist=q_artist, title=q_title,
+            captcha_handler=c_handler, sources=sources,
+        )
+        tracks = session.tracks
+        if not tracks:
             await status_msg.edit_text("😔 Ничего не найдено")
             return
 
-        # Split "Artist - Title" so artist and title are matched separately;
-        # otherwise treat the whole query as the title (word-order tolerant).
-        q_artist, q_title = "", query
-        for sep in (" — ", " – ", " - ", " -", "- "):
-            if sep in query:
-                left, _, right = query.partition(sep)
-                if left.strip() and right.strip():
-                    q_artist, q_title = left.strip(), right.strip()
-                    break
-
-        # Rank by closeness to what the user typed, then cache (evict oldest).
-        all_tracks = rank_by_relevance(all_tracks, q_artist, q_title)
-        user_id = message.from_user.id
-        _search_cache[user_id] = all_tracks
-        if len(_search_cache) > _MAX_CACHE:
-            _search_cache.popitem(last=False)
-        artist_name = all_tracks[0].artist if all_tracks else None
-        text = _format_results(all_tracks, page=1, per_page=PER_PAGE, total=len(all_tracks))
-        kb = search_results_kb(all_tracks, page=1, total=len(all_tracks), per_page=PER_PAGE, artist_name=artist_name)
+        artist_name = session.rank_query.artist or tracks[0].artist
+        text = _format_results(tracks, page=1, per_page=PER_PAGE, total=len(tracks), more=session.has_more)
+        kb = search_results_kb(tracks, page=1, total=len(tracks), per_page=PER_PAGE,
+                               artist_name=artist_name, has_more=session.has_more)
 
         await status_msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
     except Exception as e:
         logger.error("Search failed: %s", e)
         await status_msg.edit_text("❌ Произошла ошибка при поиске. Попробуйте позже.")
-
-
-def get_cached_tracks(user_id: int) -> list[TrackInfo]:
-    """Get cached search results for a user."""
-    return _search_cache.get(user_id, [])
 
 
 def sort_tracks(tracks: list[TrackInfo], sort_by: str) -> list[TrackInfo]:
@@ -175,7 +196,7 @@ def sort_tracks(tracks: list[TrackInfo], sort_by: str) -> list[TrackInfo]:
         return sorted(tracks, key=lambda t: t.bitrate)
     elif sort_by in ("title", "asc"):
         return sorted(tracks, key=lambda t: t.title.lower())
-    
+
     def default_sort_key(t: TrackInfo):
         # Primary: Duration (ascending)
         # Secondary: Estimated or real size (descending)
@@ -186,7 +207,7 @@ def sort_tracks(tracks: list[TrackInfo], sort_by: str) -> list[TrackInfo]:
             # Estimate: YouTube tracks are usually around 128-160kbps
             # 160 kbps = 20 KB/s
             eff_size = t.duration * 20 * 1024
-            
+
         return (t.duration, -eff_size)
 
     return sorted(tracks, key=default_sort_key)
@@ -197,334 +218,9 @@ def filter_lossless(tracks: list[TrackInfo]) -> list[TrackInfo]:
     return [t for t in tracks if t.is_lossless or t.bitrate >= 320]
 
 
-# Markers of non-original edits. A track carrying one of these is penalised
-# unless the query itself asks for it (so a search for "slowed" still works).
-_EDIT_TAGS = (
-    "slowed", "sped up", "spedup", "speed up", "nightcore", "reverb",
-    "remix", "cover", "live", "karaoke", "instrumental", "8d audio", "8d",
-    "bass boosted", "mashup", "tiktok", "ringtone", "acapella", "acoustic",
-)
-
-_NOISE_RE = re.compile(r"\(.*?\)|\[.*?\]")
-_NON_WORD_RE = re.compile(r"[^\w\s]", re.UNICODE)
-_WS_RE = re.compile(r"\s+")
-
-
-def _normalize(s: str) -> str:
-    """Lowercase, strip bracketed noise and punctuation for fuzzy comparison."""
-    s = _NOISE_RE.sub(" ", s.lower())
-    s = _NON_WORD_RE.sub(" ", s)
-    return _WS_RE.sub(" ", s).strip()
-
-
-def _tag_pattern(tags) -> re.Pattern:
-    """Whole-word matcher for tags (longest first).
-
-    Substring matching gave false hits: "news" in "Huey Lewis & The News",
-    "выпуск" in "Выпускной", "час" in "Сейчас", "official" in "unofficial".
-    """
-    alts = "|".join(re.escape(t) for t in sorted(set(tags), key=len, reverse=True))
-    return re.compile(rf"(?<!\w)(?:{alts})(?!\w)")
-
-
-def _tags_in(text: str, pattern: re.Pattern) -> set[str]:
-    """Tags found in ``text``. Run on the raw lowercased text, NOT _normalize():
-    edits are usually bracketed ("Believer (Slowed + Reverb)") and _normalize
-    strips brackets, so those versions used to score like the original."""
-    return {m.group(0) for m in pattern.finditer(text.lower())}
-
-
-# Markers of podcasts / non-song long-form / compilation junk. A track carrying
-# one of these (or running far longer than a song) is pushed down hard or dropped
-# — unless the user's own query asks for that kind of content.
-_JUNK_TAGS = (
-    "podcast", "подкаст", "эпизод", "episode", "выпуск", "интервью",
-    "interview", "стрим", "stream", "обзор", "review", "новости", "news",
-    "лекция", "lecture", "разговор", "аудиокнига", "audiobook", "глава",
-    "chapter", "проповедь", "сборник", "compilation", "megamix",
-    "playlist", "плейлист", "лучшие песни", "greatest hits", "all songs",
-    "full album", "целый альбом", "радио", "talk",
-)
-
-# Strongest markers — these alone justify dropping a result entirely (not just
-# penalising), since they are virtually never a song the user searched for.
-_HARD_JUNK_TAGS = (
-    "podcast", "подкаст", "эпизод", "выпуск", "episode",
-    "аудиокнига", "audiobook", "глава", "проповедь", "лекция",
-    "интервью", "interview", "talk show",
-)
-
-# If the query itself contains one of these, the user WANTS long-form, so we
-# skip the podcast/duration filtering entirely.
-_LONGFORM_QUERY_TAGS = (
-    "podcast", "подкаст", "mix", "микс", "сборник", "compilation",
-    "album", "альбом", "playlist", "плейлист", "full", "целиком",
-    "hour", "hours", "час", "часа", "часов", "lofi", "lo-fi",
-    "live set", "концерт", "concert", "greatest hits", "audiobook",
-    "аудиокнига", "лекция", "подряд",
-)
-
-_EDIT_RE = _tag_pattern(_EDIT_TAGS)
-_JUNK_RE = _tag_pattern(_JUNK_TAGS)
-_HARD_JUNK_RE = _tag_pattern(_HARD_JUNK_TAGS)
-_LONGFORM_RE = _tag_pattern(_LONGFORM_QUERY_TAGS)
-
-_SONG_HARD_MAX_SEC = 1800   # 30 min — drop entirely (almost never a single song)
-_SONG_LONG_SEC = 1200       # 20 min — heavy penalty
-_SONG_SUSPECT_SEC = 600     # 10 min — light penalty
-
-
-def _is_longform_query(q: str) -> bool:
-    """True if the query explicitly asks for a mix/podcast/album/long content."""
-    return bool(_tags_in(q, _LONGFORM_RE))
-
-
-def _token_set_ratio(a: str, b: str) -> float:
-    """Order-independent word overlap (matches 'Believer Imagine Dragons')."""
-    sa, sb = set(a.split()), set(b.split())
-    if not sa or not sb:
-        return 0.0
-    return len(sa & sb) / max(len(sa), len(sb))
-
-
-def _junk_penalty(track: TrackInfo, q_norm: str, longform: bool) -> float:
-    """Penalty for podcast/junk/over-long items.
-
-    Nothing is dropped — the penalty is large enough to sink junk below every
-    real song match (whose score is ~0..1.3), so it lands at the END of the list
-    but stays available. Hard junk sinks further than soft junk.
-    """
-    if longform:
-        return 0.0
-    combined = f"{track.artist} {track.title}"
-    if _tags_in(combined, _HARD_JUNK_RE) - _tags_in(q_norm, _HARD_JUNK_RE):
-        penalty = 2.0    # podcasts / audiobooks / episodes / interviews
-    # Soft tags only in the title: in the uploader they are often a band name
-    # ("Huey Lewis & The News"), while a podcast channel trips the hard tags.
-    elif _tags_in(track.title, _JUNK_RE) - _tags_in(q_norm, _JUNK_RE):
-        penalty = 1.0    # compilations / greatest hits / megamix / playlists
-    else:
-        penalty = 0.0
-    d = track.duration
-    if d > _SONG_HARD_MAX_SEC:
-        penalty += 1.5
-    elif d > _SONG_LONG_SEC:
-        penalty += 0.6
-    elif d > _SONG_SUSPECT_SEC:
-        penalty += 0.2
-    return penalty
-
-
-# Uploader markers that signal an official, canonical upload (highest quality):
-# VEVO, YouTube auto-generated artist channels ("… - Topic"), and major labels.
-_OFFICIAL_LABELS = (
-    "vevo", "- topic", "sony music", "warner music", "universal music",
-    "believe music", "atlantic records", "columbia records", "def jam",
-    "capitol records", "republic records", "rca records", "interscope",
-    "ego music", "napalm records", "roadrunner records", "official",
-)
-
-
-_OFFICIAL_RE = _tag_pattern(_OFFICIAL_LABELS)
-
-
 def _is_official(track: TrackInfo) -> bool:
     """True if the track's uploader looks like an official source / label."""
-    artist = track.artist.lower()
-    if artist.endswith("topic") or artist.endswith("vevo") or _tags_in(artist, _OFFICIAL_RE):
-        return True
-    return False
-
-
-_OFFICIAL_TITLE_RE = _tag_pattern(("official",))
-
-
-def _official_boost(track: TrackInfo) -> float:
-    """Boost for official sources so they outrank lyrics/cover channels."""
-    boost = 0.0
-    if _is_official(track):
-        boost += 0.20
-    if _tags_in(track.title, _OFFICIAL_TITLE_RE):
-        boost += 0.08
-    return boost
-
-
-def relevance_score(track: TrackInfo, query_artist: str, query_title: str) -> float:
-    """Return 0..1 closeness of a track to the desired official artist/title."""
-    q_title = _normalize(query_title)
-    q_artist = _normalize(query_artist)
-    t_title = _normalize(track.title)
-    t_artist = _normalize(track.artist)
-    combined_q = f"{q_artist} {q_title}".strip()
-    combined_t = f"{t_artist} {t_title}".strip()
-
-    # Best of title-only, full (artist+title), and order-independent word overlap,
-    # so it works whether or not the platform splits artist/title like we do and
-    # regardless of word order ("Believer Imagine Dragons" vs "Imagine Dragons …").
-    score = max(
-        SequenceMatcher(None, q_title, t_title).ratio(),
-        SequenceMatcher(None, combined_q, combined_t).ratio(),
-        _token_set_ratio(combined_q, combined_t),
-    )
-
-    # Reward exact substring containment (handles "feat." / extra words).
-    if q_title and q_title in t_title:
-        score += 0.12
-    if q_artist and q_artist in combined_t:
-        score += 0.12
-
-    # Penalise remix/edit versions unless the user asked for that kind of edit
-    # ("believer slowed" is fine with "(Slowed + Reverb)"). Applied after the
-    # clamp: the containment bonuses push matches to ~1.24, so subtracting
-    # before clamping left a bracketed edit at 0.99 — no real penalty.
-    score = min(score, 1.0)
-    edits = _tags_in(f"{track.artist} {track.title}", _EDIT_RE)
-    if edits and not edits & _tags_in(f"{query_artist} {query_title}", _EDIT_RE):
-        score -= 0.25
-
-    return max(0.0, score)
-
-
-def quality_score(track: TrackInfo) -> float:
-    """0..1 estimate of audio quality — heavier / higher-bitrate ranks higher."""
-    if track.is_lossless:
-        return 1.0
-    kbps = float(track.bitrate)
-    if kbps <= 0 and track.filesize > 0 and track.duration > 0:
-        # Derive bitrate from the real file weight (the "fattest" wins).
-        kbps = track.filesize * 8 / track.duration / 1000
-    if kbps <= 0:
-        # No metadata yet (YouTube/Spotify before download); assume a mid value,
-        # VK typically serves 320k.
-        kbps = 320.0 if track.source == "vk" else 192.0
-    return max(0.0, min(kbps / 320.0, 1.0))
-
-
-def _median(values: list[float]) -> float:
-    if not values:
-        return 0.0
-    s = sorted(values)
-    mid = len(s) // 2
-    return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
-
-
-def _duration_score(duration: int, ref: float) -> float:
-    """1.0 near the consensus release length, decaying with distance from it.
-
-    Penalises both over-long edits (extended/looped/slowed) and short snippets.
-    """
-    if ref <= 0 or duration <= 0:
-        return 0.5  # neutral when we don't know
-    return max(0.0, 1.0 - abs(duration - ref) / ref)
-
-
-# Weights for the secondary criteria. Name relevance (0..1) still dominates, but
-# quality is weighted enough to pull the higher-bitrate/lossless version of the
-# *same* song to the top — "качественные вперёд" — without overriding a clearly
-# better title match.
-_W_QUALITY = 0.20
-_W_DURATION = 0.10
-
-
-# Words that don't help identify a song when matching duplicates across sources.
-_GROUP_NOISE = {
-    "official", "video", "music", "audio", "lyrics", "lyric", "hd", "hq", "4k",
-    "vevo", "topic", "feat", "ft", "prod", "remastered", "explicit", "the",
-    "mv", "m", "v", "clip", "visualizer",
-}
-
-
-def _track_tokens(t: TrackInfo) -> set[str]:
-    """Significant words of a track (artist+title) for duplicate detection."""
-    words = _normalize(f"{t.artist} {t.title}").split()
-    return {w for w in words if w not in _GROUP_NOISE and len(w) > 1}
-
-
-def _group_same_track(ranked: list[TrackInfo]) -> list[TrackInfo]:
-    """Keep the same song from different sources adjacent (best quality first).
-
-    Input is already score-sorted. A group is anchored at its best-ranked member,
-    so a relevant/official hit still pulls the group up, but inside the group the
-    highest-quality copy (e.g. a 320k VK upload) shows first. Nothing is removed.
-    """
-    groups: list[dict] = []
-    for t in ranked:
-        toks = _track_tokens(t)
-        edits = _tags_in(f"{t.artist} {t.title}", _EDIT_RE)
-        placed = False
-        for g in groups:
-            if not toks or not g["tokens"] or edits != g["edits"]:
-                continue  # different tokens, or e.g. "(Slowed)" vs the original
-            # Containment (overlap / smaller set) tolerates channel-name noise
-            # like "ImagineDragonsVEVO" vs "7clouds" better than Jaccard, while
-            # the duration gate stops different same-artist songs from merging.
-            overlap = len(toks & g["tokens"]) / min(len(toks), len(g["tokens"]))
-            dur_ok = (
-                g["dur"] == 0 or t.duration == 0
-                or abs(t.duration - g["dur"]) <= 0.30 * g["dur"]
-            )
-            if overlap >= 0.70 and dur_ok:
-                g["members"].append(t)
-                placed = True
-                break
-        if not placed:
-            groups.append({"tokens": toks, "edits": edits, "dur": t.duration, "members": [t]})
-
-    out: list[TrackInfo] = []
-    for g in groups:
-        g["members"].sort(key=lambda x: -quality_score(x))
-        out.extend(g["members"])
-    return out
-
-
-def rank_by_relevance(
-    tracks: list[TrackInfo],
-    query_artist: str,
-    query_title: str,
-    min_score: float = 0.0,
-) -> list[TrackInfo]:
-    """Rank tracks for selection.
-
-    Primary: closeness to the official artist/title. Secondary (tie-breakers):
-    audio quality (heaviest/highest-bitrate) and duration closeness to the
-    consensus release length. Podcasts / non-song long-form / compilation junk
-    is dropped or penalised unless the query itself asks for it.
-    `min_score` filters on the relevance component only.
-    """
-    raw_query = f"{query_artist} {query_title}".strip()
-    longform = _is_longform_query(raw_query)
-    q_norm = _normalize(raw_query)
-
-    # Nothing is dropped: junk is just heavily penalised so it sinks to the end.
-    kept = [
-        (rel, t)
-        for rel, t in ((relevance_score(t, query_artist, query_title), t) for t in tracks)
-        if rel >= min_score
-    ]
-    if not kept:
-        return []
-
-    # Consensus ("official") duration ≈ median length across the real matches.
-    ref = _median([float(t.duration) for _, t in kept if t.duration > 0])
-
-    scored = [
-        (
-            rel
-            + _W_QUALITY * quality_score(t)
-            + _W_DURATION * _duration_score(t.duration, ref)
-            + _official_boost(t)
-            - _junk_penalty(t, q_norm, longform),
-            t.filesize,  # tie-break: prefer the heaviest ("fattest") file
-            -idx,        # then keep original (platform-priority) order
-            t,
-        )
-        for idx, (rel, t) in enumerate(kept)
-    ]
-    scored.sort(key=lambda x: (-x[0], -x[1], -x[2]))
-    # Keep the same song from different platforms together (best quality first).
-    return _group_same_track([t for *_, t in scored])
-
-
+    return is_official(track)
 
 
 @router.message(F.text.regexp(r'https?://(?:m\.)?vk\.com/(?:music/playlist/|audio\?z=audio_playlist)(-?\d+)_(\d+)(?:(?:/|%2F|_)([a-zA-Z0-9]+))?'))
